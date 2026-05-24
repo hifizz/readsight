@@ -182,42 +182,108 @@ const PAGE_MODE_HARD_EXCLUDE = '.english-agent-translation, script, style, noscr
 /** page 模式更宽松的最短文本：UI 标签 / 短按钮文案也要翻 */
 const MIN_BLOCK_LENGTH_PAGE = 2;
 
+/**
+ * page 模式认定为"块级翻译单元"的标签集合。
+ * 注意包含 DIV —— 现代 React 站（YC、Vercel、Linear 等）拿 <div>/<span> 当
+ * 段落用，不挂 <p>。inline 标签 (a/span/em/code/strong) 不在这里：它们
+ * 折叠进父级 block 一起翻，避免每个 <a>/<span> 都成独立翻译单元。
+ */
+const PAGE_BLOCK_TAGS = new Set([
+  'P', 'LI', 'BLOCKQUOTE', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6',
+  'DD', 'DT', 'TD', 'TH', 'FIGCAPTION', 'SUMMARY', 'LABEL', 'BUTTON',
+  'CAPTION', 'ADDRESS', 'DIV', 'SECTION', 'ARTICLE', 'ASIDE',
+  'HEADER', 'FOOTER', 'NAV', 'MAIN',
+]);
+
 function extractArticleBlocks(mode: TranslateMode = 'article'): ArticleBlock[] {
-  // article 模式：只在 <article> / <main> 容器内，过祖先黑名单 + Readability allowlist
-  // page 模式：扫整个 body，放松最短长度 + 不过滤 link 比例 —— 用户要"整页翻"
-  const root = mode === 'article' ? findArticleRoot() : document.body;
-  const allow = mode === 'article' ? buildReadabilityAllowlist() : null;
-  const minLen = mode === 'article' ? MIN_BLOCK_LENGTH : MIN_BLOCK_LENGTH_PAGE;
+  if (mode === 'page') return extractPageBlocks();
+
+  // article 模式（保持原逻辑）：只在 <article>/<main> 内 + Readability 过滤
+  const root = findArticleRoot();
+  const allow = buildReadabilityAllowlist();
   const elements = Array.from(root.querySelectorAll<HTMLElement>(BLOCK_SELECTOR));
   const blocks: ArticleBlock[] = [];
   for (const el of elements) {
     if (el.classList.contains(TRANSLATION_CLASS)) continue;
-
     const isArticleHeading =
       el.tagName === 'H1' && el.closest(ARTICLE_ROOT_SELECTOR) !== null;
-
-    if (mode === 'article') {
-      if (!isArticleHeading && el.closest(EXCLUDE_ANCESTOR_SELECTOR)) continue;
-    } else {
-      // page 模式：仅排除翻译节点自身 / script / style
-      if (el.closest(PAGE_MODE_HARD_EXCLUDE)) continue;
-    }
-
+    if (!isArticleHeading && el.closest(EXCLUDE_ANCESTOR_SELECTOR)) continue;
     const rawText = (el.textContent ?? '').trim();
-    if (rawText.length < minLen) continue;
-    // article 模式才用 link 比例过滤；page 模式 nav 也要翻
-    if (mode === 'article' && linkTextRatio(el) > 0.5) continue;
-
-    if (mode === 'article' && !isArticleHeading && allow && !isInReadableArticle(el, allow)) {
-      continue;
-    }
-
+    if (rawText.length < MIN_BLOCK_LENGTH) continue;
+    if (linkTextRatio(el) > 0.5) continue;
+    if (!isArticleHeading && allow && !isInReadableArticle(el, allow)) continue;
     const { text, restoreMap } = extractTextWithPreserves(el);
-    if (text.length < minLen) continue;
-
+    if (text.length < MIN_BLOCK_LENGTH) continue;
     const id = el.getAttribute(BLOCK_ID_ATTR) ?? crypto.randomUUID();
     el.setAttribute(BLOCK_ID_ATTR, id);
     blocks.push({ id, element: el, text, restoreMap });
+  }
+  return blocks;
+}
+
+/**
+ * page 模式抓块：走 text node，找最近 block-like 祖先做"翻译单元"。
+ *
+ * 为什么这么做：YC company 页 / 大部分 React SPA 用 <div>/<span> 当段落，
+ * 不挂 <p>。靠 BLOCK_SELECTOR 抓不到。改成扫文本节点 → 折叠到最近
+ * block-like 容器（PAGE_BLOCK_TAGS），就能覆盖任意标签结构。
+ *
+ * 嵌套去重策略：
+ *   - 文档顺序 TreeWalker 保证内层文本先出现
+ *   - 新单元若有祖先已在集合里：跳过（祖先已覆盖此文本）
+ *   - 新单元若是已收集单元的祖先：替换（外层吞掉内层，避免重复翻译）
+ *
+ * 这两条规则在 sibling 顺序混合（"内层 div + 外层 li 直接文本"）的奇怪
+ * 结构上仍可能丢字，但实际页面极少这样写。够用。
+ */
+function extractPageBlocks(): ArticleBlock[] {
+  const units = new Set<HTMLElement>();
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  let node: Node | null;
+  while ((node = walker.nextNode())) {
+    const text = node.nodeValue ?? '';
+    if (text.trim().length < 2) continue;
+    let cur: HTMLElement | null = (node as Text).parentElement;
+    let unit: HTMLElement | null = null;
+    while (cur && cur !== document.body) {
+      if (PAGE_BLOCK_TAGS.has(cur.tagName)) {
+        unit = cur;
+        break;
+      }
+      cur = cur.parentElement;
+    }
+    if (!unit) continue;
+    if (unit.closest(PAGE_MODE_HARD_EXCLUDE)) continue;
+    if (unit.classList.contains(TRANSLATION_CLASS)) continue;
+
+    // 祖先已在集合里 —— 已被外层覆盖，跳过
+    let p: HTMLElement | null = unit.parentElement;
+    let coveredByAncestor = false;
+    while (p) {
+      if (units.has(p)) {
+        coveredByAncestor = true;
+        break;
+      }
+      p = p.parentElement;
+    }
+    if (coveredByAncestor) continue;
+
+    // 当前单元是已收集某单元的祖先 —— 替换（外层吞内层）
+    for (const existing of [...units]) {
+      if (unit !== existing && unit.contains(existing)) units.delete(existing);
+    }
+    units.add(unit);
+  }
+
+  const blocks: ArticleBlock[] = [];
+  for (const unit of units) {
+    const rawText = (unit.textContent ?? '').trim();
+    if (rawText.length < MIN_BLOCK_LENGTH_PAGE) continue;
+    const { text, restoreMap } = extractTextWithPreserves(unit);
+    if (text.length < MIN_BLOCK_LENGTH_PAGE) continue;
+    const id = unit.getAttribute(BLOCK_ID_ATTR) ?? crypto.randomUUID();
+    unit.setAttribute(BLOCK_ID_ATTR, id);
+    blocks.push({ id, element: unit, text, restoreMap });
   }
   return blocks;
 }
