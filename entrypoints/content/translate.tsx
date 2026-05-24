@@ -416,8 +416,11 @@ class TranslationOrchestrator {
   }
 
   /**
-   * 一个 block 进视口 → 攒进 pendingBatch。
-   * 满 MAX_BATCH_SIZE 立刻 flush；否则 debounce 200ms 等同伴一起。
+   * 一个 block 进视口 → 攒进 pendingBatch，重置 debounce timer。
+   *
+   * 关键：不再"满 MAX_BATCH_SIZE 立刻 flush"。要等 debounce 到期 / 一组
+   * 视口块都进队再 flushPending，flush 时按到视口距离排序，**视口内 / 离
+   * 视口最近的块优先出队** —— 避免用户滚到中段时还在等顶部翻完。
    */
   private enqueue(id: string): void {
     const block = this.blocks.get(id);
@@ -425,29 +428,41 @@ class TranslationOrchestrator {
     block.status = 'pending';
     this.pendingBatch.push(id);
 
-    // 攒满了直接 flush，不再等 debounce
-    while (this.pendingBatch.length >= MAX_BATCH_SIZE) {
-      const slice = this.pendingBatch.splice(0, MAX_BATCH_SIZE);
-      this.dispatchBatch(slice);
-    }
+    if (this.batchTimer) clearTimeout(this.batchTimer);
+    this.batchTimer = setTimeout(() => this.flushPending(), BATCH_DEBOUNCE_MS);
+  }
 
-    // 还有零头：启动 / 重置 debounce timer
-    if (this.pendingBatch.length > 0) {
-      if (this.batchTimer) clearTimeout(this.batchTimer);
-      this.batchTimer = setTimeout(() => this.flushPending(), BATCH_DEBOUNCE_MS);
-    }
+  /** 按块中心到当前视口中心的距离做优先级；越近越先翻。 */
+  private distanceFromViewport(id: string): number {
+    const b = this.blocks.get(id);
+    if (!b) return Infinity;
+    const rect = b.element.getBoundingClientRect();
+    const blockCenterY = rect.top + rect.height / 2; // viewport 坐标，scroll 已包含
+    const viewportCenterY = window.innerHeight / 2;
+    return Math.abs(blockCenterY - viewportCenterY);
   }
 
   private flushPending(): void {
     this.batchTimer = null;
     if (this.pendingBatch.length === 0) return;
-    const slice = this.pendingBatch.splice(0);
-    this.dispatchBatch(slice);
+
+    // 按视口距离重排：离视口越近的先出队
+    const sorted = [...this.pendingBatch].sort(
+      (a, b) => this.distanceFromViewport(a) - this.distanceFromViewport(b),
+    );
+    this.pendingBatch.length = 0;
+
+    // 切成 MAX_BATCH_SIZE 一组的多个 batch；视口最近的整批先发
+    for (let i = 0; i < sorted.length; i += MAX_BATCH_SIZE) {
+      this.dispatchBatch(sorted.slice(i, i + MAX_BATCH_SIZE));
+    }
   }
 
   /**
    * 把一个完整 batch 派发 —— 当前 inFlight 名额不够就先排队。
-   * 顺序按"先到先发"，简单的 FIFO。
+   *
+   * slot 释放时不再 FIFO，而是按"批内最近视口距离"重新挑下一批 ——
+   * 用户在等待期间继续滚动，新进队的视口块能跳过老的"已滚过"批次。
    */
   private dispatchBatch(ids: string[]): void {
     if (this.inFlightBatches >= MAX_CONCURRENT_BATCHES) {
@@ -457,9 +472,26 @@ class TranslationOrchestrator {
     this.inFlightBatches++;
     void this.translateBatch(ids).finally(() => {
       this.inFlightBatches--;
-      // 释放后看看有没有等着的 batch
-      const next = this.waitingForSlot.shift();
-      if (next) this.dispatchBatch(next);
+      // 当前所有 waiting batch 里挑离视口最近的一批先发
+      if (this.waitingForSlot.length > 0) {
+        let bestIdx = 0;
+        let bestDist = Infinity;
+        for (let i = 0; i < this.waitingForSlot.length; i++) {
+          const batch = this.waitingForSlot[i];
+          // batch 内任一块的最近距离作为该批优先级
+          let minDist = Infinity;
+          for (const id of batch) {
+            const d = this.distanceFromViewport(id);
+            if (d < minDist) minDist = d;
+          }
+          if (minDist < bestDist) {
+            bestDist = minDist;
+            bestIdx = i;
+          }
+        }
+        const next = this.waitingForSlot.splice(bestIdx, 1)[0];
+        this.dispatchBatch(next);
+      }
     });
   }
 
