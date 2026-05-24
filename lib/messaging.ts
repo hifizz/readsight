@@ -36,7 +36,20 @@ export type BackgroundMessage =
   /** Sidepanel 点 records 条目 → 让 background 找到原文 tab 触发高亮（PRD §8.3） */
   | { type: 'HIGHLIGHT_REQUEST'; payload: { url: string; anchor: SelectionContext['anchor'] } }
   /** Background → content script：在当前 tab 的页面上高亮 anchor 指向的文本 */
-  | { type: 'HIGHLIGHT_ANCHOR'; payload: SelectionContext['anchor'] };
+  | { type: 'HIGHLIGHT_ANCHOR'; payload: SelectionContext['anchor'] }
+  /** Content → background：批量翻译一组段落，sendResponse 返结果（一次往返） */
+  | {
+      type: 'TRANSLATE_BLOCKS';
+      payload: { blocks: Array<{ id: string; text: string }> };
+    };
+
+/** /api/translate 单块结果 —— 跟后端 route 返回 shape 同步。 */
+export interface TranslationResult {
+  id: string;
+  zh: string;
+  source: 'cache' | 'llm';
+  error?: string;
+}
 
 /**
  * `/api/lookup` 返回结构。前端 WordCard 直接吃这个 shape；后端缓存表也存这个。

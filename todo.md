@@ -45,50 +45,21 @@ GLM-4-Flash 已经在 M2 接好做翻译，中文母语 + 免费 + 快，复用�
 
 ---
 
-## Phase B — Content Script 抽取 + 浮动按钮 + 双语注入
+## Phase B — Content Script 抽取 + 浮动按钮 + 双语注入 ✅
 
-- [ ] **B.1** 浮动 "翻译全文" 按钮（Shadow DOM，与 pill 共存）
-  - 位置：右下角，垂直距 pill 不冲突
-  - 状态机：idle ⇄ translating ⇄ translated；translated 状态下按钮文案变 "撤销翻译"
-  - 验证：手测三态切换；按钮 click 触发下面 B.2
-
-- [ ] **B.2** 文章正文 block 抽取
-  - 沿用 M0/M1 的 BLOCK_SELECTOR (`p, li, blockquote, h1-h6, dd`)
-  - 限定在 `article` / `main` 容器内（默认适配器）；TechCrunch 有 `<article>` 标签
-  - 给每个 block 加唯一 id（运行时生成 `crypto.randomUUID()`，记 element ↔ id 的 Map）
-  - 过滤：text < 20 字符 跳过（导航/标签噪声）
-  - 验证：在 TechCrunch 文章页 console 跑这个函数，应该返 20-50 个 block
-
-- [ ] **B.3** 触发翻译 —— 发 BATCH_TRANSLATE 给 background
-  - 每批 5 个 block 拆分；多批并发发送
-  - 收到 background 推回的"某块译文 ready" 事件 → 在对应 block 下方插 `<div>` 注入译文
-  - 注入节点：纯 DOM（非 Shadow），淡灰背景 + 左边线，class `english-agent-translation`，便于以后 remove
-  - 行内样式 + class，避免被 TechCrunch 自家 CSS 干掉
-  - 验证：点按钮 → 看到译文逐批冒出
-
-- [ ] **B.4** 按块独立失败
-  - 失败块：下方 inject 一个红色小提示 + "重试" 按钮（只重发这一块）
-  - 验证：故意让某块原文是空字符串（后端会返 error），UI 看到红色提示
-
-- [ ] **B.5** 撤销翻译
-  - 点按钮在 translated 状态 → `document.querySelectorAll('.english-agent-translation').forEach(el => el.remove())`
-  - 按钮文案回 "翻译全文"，DOM 复原
-  - 验证：注入 + 撤销 + 再注入，5 次循环 DOM 干净不残留
+- [x] **B.1** ✓ TranslateFab 浮动按钮（独立 Shadow DOM `english-agent-fab`，bottom-right，与 pill 状态解耦）；四态：idle / translating / translated / error；translating 下显示 `done/total` 进度
+- [x] **B.2** ✓ `extractArticleBlocks()`：从 `article` / `main` / `[role=main]` 任一 root 内查 BLOCK_SELECTOR；text < 20 字符过滤；每 block 打 `data-eag-id` 属性双向绑定
+- [x] **B.3** ✓ FAB 点击 → 拆 5/批 + `Promise.all` 并发 → 通过 background 转 `/api/translate` → 结果按 `data-eag-id` 找回 element → `insertAdjacentElement('afterend', div.english-agent-translation)` 注入；progress state 每批 +N 更新 FAB 文案
+- [x] **B.4** ✓ 失败块：红色背景 + 边线 + 重试按钮，按钮 closure 单 block 重发；整批失败时所有块都拿到 retry 入口
+- [x] **B.5** ✓ `undoAllTranslations()` querySelectorAll(`.english-agent-translation`).remove()；FAB 在 translated/error 状态点击触发撤销
 
 ---
 
-## Phase C — Background 总线（消息中转 + 缓存）
+## Phase C — Background 总线（消息中转）✅
 
-- [ ] **C.1** Background 收 `TRANSLATE_BLOCKS { blocks: [{id, text}] }`
-  - 转发到 `POST /api/translate`（用 BACKEND env URL）
-  - 收到响应后给 content script 发 `TRANSLATION_RESULTS { results: [{id, zh, error?}] }`
-  - 验证：日志看到 round-trip 时延
-
-- [ ] **C.2** 重试单个 block
-  - 收 `RETRY_BLOCK { id, text }` → 单块走 /api/translate → 单块 TRANSLATION_RESULT 回 content script
-
-- [ ] **C.3** （可选）background 不做缓存层
-  - 缓存在后端 DB 做了，background 只是 message proxy；不在 SW 内存搞二级缓存（SW 会被回收）
+- [x] **C.1** ✓ Background 收 `TRANSLATE_BLOCKS` → `handleTranslateBlocks` 转发到 `/api/translate` → sendResponse `{ ok, results }` 回 content script（一次往返，sync request-response 比双向消息更稳）
+- [x] **C.2** ✓ 重试单块复用同一条 message —— content script 把单块当批量 1 元素发；不需要新消息类型
+- [x] **C.3** ✓ background 不做二级缓存，纯 message proxy（SW 会被回收，缓存放后端 DB 才是 source-of-truth）
 
 ---
 

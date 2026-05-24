@@ -15,6 +15,7 @@ import ReactDOM from 'react-dom/client';
 import { useEffect, useState } from 'react';
 import type { SelectionContext, SelectionType, BackgroundMessage } from '@/lib/messaging';
 import { resolveLemma } from '@/lib/lemmatize';
+import { TranslateFab } from './translate';
 
 const BACKEND = import.meta.env.WXT_BACKEND_URL ?? 'http://localhost:4010';
 const KNOWN_ITEMS_KEY = 'english-agent:known-items';
@@ -50,6 +51,24 @@ export default defineContentScript({
       onRemove: (root) => root?.unmount(),
     });
     ui.mount();
+
+    // 全文翻译浮动按钮（M3 PRD §7.1）—— 独立 Shadow DOM，与 pill 状态解耦
+    const fabUi = await createShadowRootUi(ctx, {
+      name: 'english-agent-fab',
+      position: 'overlay',
+      alignment: 'bottom-right',
+      zIndex: 2147483646,
+      anchor: 'body',
+      onMount: (container) => {
+        const host = document.createElement('div');
+        container.append(host);
+        const root = ReactDOM.createRoot(host);
+        root.render(<TranslateFab />);
+        return root;
+      },
+      onRemove: (root) => root?.unmount(),
+    });
+    fabUi.mount();
 
     // 被动重逢扫描（PRD §5.2 / §8.2 弱正信号）—— 在 idle 时扫一次
     schedulePassiveScan();

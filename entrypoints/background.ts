@@ -56,9 +56,29 @@ export default defineBackground(() => {
         .catch((err) => sendResponse({ ok: false, error: String(err) }));
       return true;
     }
+    if (message.type === 'TRANSLATE_BLOCKS') {
+      // 转发到 /api/translate；用 sendResponse 把结果一次返回给 content script
+      handleTranslateBlocks(message.payload)
+        .then((results) => sendResponse({ ok: true, results }))
+        .catch((err) => sendResponse({ ok: false, error: String(err) }));
+      return true;
+    }
     return false;
   });
 });
+
+async function handleTranslateBlocks(payload: {
+  blocks: Array<{ id: string; text: string }>;
+}) {
+  const res = await fetch(`${BACKEND}/api/translate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = (await res.json()) as { results: unknown };
+  return data.results;
+}
 
 /**
  * 在所有 tabs 里找一个 URL 匹配的（PRD §8.3 跳回原文），把 HIGHLIGHT_ANCHOR
