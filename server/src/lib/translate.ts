@@ -143,7 +143,11 @@ async function callLLMBatch(
         '',
         `Return a JSON object: { "translations": [<${texts.length} Chinese strings>] }`,
       ].join('\n'),
-      maxOutputTokens: 6000,
+      // DeepSeek-V3 / GLM-4-Flash / 大多数 OpenRouter free 模型默认上限 8192。
+      // 我们留 8000 给译文 + JSON 框架。12 段中文 ~3000 + 框架 ~200 远低于此，
+      // 但段落本身偏长（一段 200+ 词）或带占位符回填后会膨胀，留余量避免
+      // finish=length 截断（截断后 generateObject 会抛 NoObjectGeneratedError）。
+      maxOutputTokens: 8000,
     });
     object = result.object;
     finishReason = result.finishReason;
