@@ -15,8 +15,9 @@ import ReactDOM from 'react-dom/client';
 import { useEffect, useState } from 'react';
 import type { SelectionContext, SelectionType, BackgroundMessage } from '@/lib/messaging';
 import { resolveLemma } from '@/lib/lemmatize';
+import { Sparkles } from 'lucide-react';
 import { TranslateFab, togglePageTranslation } from './translate';
-import { SelectionPopup, openPopup } from './popup';
+import { SelectionPopup, openPopup, useIsPopupOpen } from './popup';
 
 const BACKEND = import.meta.env.WXT_BACKEND_URL ?? 'http://localhost:4010';
 const KNOWN_ITEMS_KEY = 'english-agent:known-items';
@@ -227,6 +228,8 @@ function SelectionPill() {
     ctx: SelectionContext;
     rect: DOMRect;  // 选区的视口坐标，用于定位 pill
   } | null>(null);
+  // popup 打开时 pill 隐藏 —— 用模块级 popup state 订阅，避免本地兄弟组件状态不同步
+  const popupOpen = useIsPopupOpen();
 
   useEffect(() => {
     function onMouseUp() {
@@ -271,25 +274,25 @@ function SelectionPill() {
     };
   }, []);
 
-  if (!snapshot) return null;
+  // popup 已开 = 不显示 pill（避免两者并存的视觉混乱）
+  if (popupOpen || !snapshot) return null;
 
   const { ctx, rect } = snapshot;
-  // pill 放在选区右上：rect.right + 6 / rect.top - 36
-  // 用 scrollX/Y 把视口坐标转成 document 坐标，跟我们 position:absolute 的根元素配合。
-  const top = window.scrollY + rect.top - 36;
-  const left = window.scrollX + rect.right + 6;
+  // pill 用 viewport 坐标 + position: fixed，与 popup 一致 —— 跟 WXT shadowHost
+  // 在 body 末尾的位置脱钩。代价：滚动时 pill 不跟选区（用户重选即可重定位）。
+  const top = rect.top - 36;
+  const left = rect.right + 6;
 
   return (
     <button
       type="button"
-      // 关键：mousedown 默认会让浏览器清掉当前 selection（"在按钮上按下"会移动焦点），
-      // 所以 preventDefault + stopPropagation 阻止；click 仍然能正常触发。
+      // mousedown 默认会让浏览器清掉当前 selection；阻止它，click 仍能正常触发。
       onMouseDown={(e) => {
         e.preventDefault();
         e.stopPropagation();
       }}
       onClick={() => {
-        // 单词选区：记下 lemma，避免本会话再扫到时误报 passive_reencounter。
+        // 单词选区：记下 lemma，避免本会话再扫到时误报 passive_reencounter
         try {
           if (ctx.selection.type === 'word') {
             activelyQueriedLemmas.add(resolveLemma(ctx.selection.text));
@@ -297,39 +300,45 @@ function SelectionPill() {
         } catch (err) {
           console.warn('[english-agent] resolveLemma in pill click threw', err);
         }
-        // PRD §8.1 轻路径：pill 点击不再直接开 sidepanel，先展开 popup 让用户
-        // 用快捷按钮就地查。需要深聊时 popup 里再有"深聊"按钮跳 sidepanel。
+        // PRD §8.1 轻路径：pill 点击展开 popup。viewport 坐标直接传，无 scroll 偏移
         openPopup(ctx, {
           rect: {
-            top: window.scrollY + rect.top,
-            left: window.scrollX + rect.left,
-            right: window.scrollX + rect.right,
-            bottom: window.scrollY + rect.bottom,
+            top: rect.top,
+            left: rect.left,
+            right: rect.right,
+            bottom: rect.bottom,
           },
         });
         setSnapshot(null);
       }}
+      aria-label="Look up with English Agent"
+      title="Look up"
       style={{
-        position: 'absolute',
+        position: 'fixed',
         top,
         left,
-        padding: '6px 10px',
+        // 圆形小按钮：icon + 单短词 "Look up"，nowrap 杜绝多行
+        padding: '5px 11px',
+        height: 28,
         background: '#111',
         color: '#fff',
         fontFamily: 'system-ui, -apple-system, sans-serif',
         fontSize: 12,
+        fontWeight: 500,
         lineHeight: 1,
-        borderRadius: 6,
+        letterSpacing: 0.2,
+        whiteSpace: 'nowrap',
+        borderRadius: 14,
         border: 'none',
         cursor: 'pointer',
-        boxShadow: '0 4px 14px rgba(0,0,0,0.35)',
+        boxShadow: '0 4px 14px rgba(0,0,0,0.30), 0 0 0 1px rgba(255,255,255,0.06) inset',
         display: 'inline-flex',
         alignItems: 'center',
-        gap: 6,
+        gap: 5,
       }}
     >
-      <span style={{ fontSize: 13 }}>🔍</span>
-      Ask English Agent
+      <Sparkles size={13} strokeWidth={2.25} />
+      Look up
     </button>
   );
 }

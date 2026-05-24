@@ -18,10 +18,21 @@ import { useEffect, useRef, useSyncExternalStore } from 'react';
 import { X, MessageSquare } from 'lucide-react';
 import type { SelectionContext } from '@/lib/messaging';
 
-/** popup 锚定位置 —— pill 点击时计算，传进来定位 popup */
+/** popup 锚定位置 —— pill 点击时计算，传进来定位 popup。
+ *  使用 viewport 坐标系（即 getBoundingClientRect 原始值），不加 scrollX/Y，
+ *  因为 popup 用 `position: fixed` 渲染。 */
 interface PopupAnchor {
-  /** 选区在 document 坐标系下的 bounding rect */
+  /** 选区在 viewport 坐标系下的 bounding rect */
   rect: { top: number; left: number; right: number; bottom: number };
+}
+
+/** 给外部（pill 等组件）订阅 popup 状态用，便于在 popup 打开时隐藏自己 */
+export function useIsPopupOpen(): boolean {
+  return useSyncExternalStore(
+    subscribePopupState,
+    () => popupState.open,
+    () => popupState.open,
+  );
 }
 
 interface PopupState {
@@ -104,15 +115,18 @@ export function SelectionPopup() {
   const state = useSyncExternalStore(subscribePopupState, getPopupState, getPopupState);
   const popupRef = useRef<HTMLDivElement>(null);
 
-  // 点击外部 / Esc 关闭。注意：必须用 pointerdown 而不是 click —— click 在
-  // 拖选时不触发，pointerdown 是用户开始新交互的最早信号。
+  // 点击外部 / Esc 关闭。关键：popup 在 Shadow DOM 里，document 收到 pointerdown
+  // 时 e.target 被 retarget 成 shadowHost；用 composedPath() 才能拿到 shadow 内
+  // 的真实目标节点。
   useEffect(() => {
     if (!state.open) return;
     function onPointerDown(e: PointerEvent) {
-      const target = e.target as Node;
-      if (popupRef.current && !popupRef.current.contains(target)) {
-        closePopup();
-      }
+      const popup = popupRef.current;
+      if (!popup) return;
+      // composedPath 会列出 shadow root 内层 → 外层，包含真实点击目标
+      const path = e.composedPath();
+      if (path.includes(popup)) return; // 点在 popup 内部，忽略
+      closePopup();
     }
     function onKey(e: KeyboardEvent) {
       if (e.key === 'Escape') closePopup();
@@ -128,7 +142,7 @@ export function SelectionPopup() {
   if (!state.open || !state.ctx || !state.anchor) return null;
 
   const actions = actionsForSelectionType(state.ctx.selection.type);
-  const { left, bottom } = positionPopup(state.anchor);
+  const { left, top } = positionPopup(state.anchor);
 
   return (
     <div
@@ -138,8 +152,10 @@ export function SelectionPopup() {
         e.stopPropagation();
       }}
       style={{
-        position: 'absolute',
-        top: bottom,
+        // 用 fixed + viewport 坐标：跟 WXT shadowHost 在 body 流里的位置脱钩，
+        // 也不需要 scrollX/Y 计算。代价是 popup 不跟着选区滚（acceptable）
+        position: 'fixed',
+        top,
         left,
         width: 360,
         maxWidth: 'calc(100vw - 40px)',
@@ -330,30 +346,29 @@ function Footer() {
 }
 
 /**
- * 简单定位：选区右下 8px 偏移；popup 自身宽 360；超视口右侧时贴右；
- * 超视口下方时翻到选区上方。后续可换更精细的算法（PRD §2 说用户有成熟实现）。
+ * 简单定位（viewport 坐标）：选区下方 8px 偏移；popup 宽 360；
+ * 超 viewport 右侧 → 贴右；下方装不下 → 翻到选区上方。
  */
-function positionPopup(anchor: PopupAnchor): { left: number; bottom: number } {
+function positionPopup(anchor: PopupAnchor): { left: number; top: number } {
   const popupWidth = 360;
   const popupMaxHeight = 360;
   const gap = 8;
-  // anchor.rect 已经是 document 坐标系（scrollX/Y 加过）
+  const margin = 12;
+  const viewportW = window.innerWidth;
+  const viewportH = window.innerHeight;
+
   let left = anchor.rect.left;
-  let bottom = anchor.rect.bottom + gap;
+  let top = anchor.rect.bottom + gap;
 
-  // 横向越界 → 贴右
-  const docWidth = document.documentElement.clientWidth;
-  if (left + popupWidth > window.scrollX + docWidth - 20) {
-    left = window.scrollX + docWidth - popupWidth - 20;
-  }
-  if (left < window.scrollX + 20) left = window.scrollX + 20;
+  // 横向：贴右防越界
+  if (left + popupWidth > viewportW - margin) left = viewportW - popupWidth - margin;
+  if (left < margin) left = margin;
 
-  // 纵向越界（弹下方装不下） → 翻到选区上方
-  const docHeight = document.documentElement.clientHeight;
-  if (bottom + popupMaxHeight > window.scrollY + docHeight) {
-    bottom = anchor.rect.top - popupMaxHeight - gap;
-    if (bottom < window.scrollY + 20) bottom = window.scrollY + 20;
+  // 纵向：下方装不下 → 翻到选区上方
+  if (top + popupMaxHeight > viewportH - margin) {
+    top = anchor.rect.top - popupMaxHeight - gap;
+    if (top < margin) top = margin;
   }
 
-  return { left, bottom };
+  return { left, top };
 }
