@@ -814,6 +814,9 @@ function FabButton({
         {status !== 'active' && (
           <button
             type="button"
+            // data-attr 让 ModeMenu 的 outside-click 监听把 chevron 当成"内部"，
+            // 否则 capture-phase pointerdown 先 set false，紧随的 click 再 toggle，永远关不掉。
+            data-ea-mode-trigger="true"
             onMouseDown={(e) => e.stopPropagation()}
             onClick={onChevronClick}
             aria-label="切换翻译模式"
@@ -849,6 +852,10 @@ function ModeMenu({
     function onPointerDown(e: PointerEvent) {
       const path = e.composedPath();
       if (menuRef.current && path.includes(menuRef.current)) return;
+      // chevron 自己负责 toggle，别让 outside-click 抢先关掉它
+      for (const node of path) {
+        if (node instanceof HTMLElement && node.dataset.eaModeTrigger === 'true') return;
+      }
       onCloseMenu();
     }
     function onKey(e: KeyboardEvent) {
@@ -872,7 +879,8 @@ function ModeMenu({
       ref={menuRef}
       style={{
         position: 'absolute',
-        bottom: 48,
+        // 跟父容器底边对齐再上抬 6px，刚好贴在 FAB 上方
+        bottom: 'calc(100% + 6px)',
         right: 0,
         minWidth: 200,
         background: '#fff',
