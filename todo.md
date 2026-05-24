@@ -1,203 +1,163 @@
-# Todo —— M0/M1 落地（assistant-ui sidepanel + Next.js 16 后端）
+# Todo —— M2 学习记录（model-ready EncounterEvent）
 
-> 配套方案：`/Users/zilin/.claude/plans/refactored-coalescing-galaxy.md`
-> 完成一项就把 `- [ ]` 改成 `- [x]`，并在该项末尾备注实际验证证据（命令输出、文件路径、截图说明等）。
-> 阻塞项标 `- [!]` 并写明等待你做什么。
-
----
-
-## Round 3 — 单词专用查询路径（PRD §6.2/§6.3 落地）
-
-- [x] **R3.1** ✓ 后端 `pnpm add wink-lemmatizer` + 自写 `server/src/types/wink-lemmatizer.d.ts`（registry 无 @types/...）
-- [x] **R3.2** ✓ schema 加 `dictionary_entries`（PK=lemma，jsonb payload）；`drizzle-kit push --force` 已应用
-- [x] **R3.3** ✓ `lib/messaging.ts` 加共享 `LookupResult` 类型；`server/src/lib/lookup.ts` 重复定义同形（避免跨包导入）
-- [x] **R3.4** ✓ `server/src/lib/lookup.ts` 主管道：normalize → wink lemmatize → DB 缓存 → Free Dictionary API → MiniMax 兜底（estimated:true）。POS 上限 4，每 POS 定义上限 2，防 WordCard 撑爆
-- [x] **R3.5** ✓ `server/src/app/api/lookup/route.ts` GET 路由 + OPTIONS 预检
-- [x] **R3.6** ✓ `server/src/app/api/chat/route.ts` system prompt 按 `selection.type` 分支：word → 专注语境化用法（避开字典义）；其他 → 原 PRD §6.1 路径
-- [x] **R3.7** ✓ `components/word-card.tsx`：IPA + 真人音频按钮（tier 1，失败回退 SpeechSynthesis tier 0）+ POS 分块定义 + estimated badge + 过期请求丢弃机制
-- [x] **R3.8** ✓ sidepanel App.tsx：`selection.type === 'word'` 时挂 WordCard 在 ContextCard 和 Thread 之间
-- [x] **R3.9** ✓ smoke test：`outed → out`、`studies → study`、`outing` 命中 cache —— 全部 200 OK，lemma 共享缓存生效
-
-**新发现 / 已知问题**：
-- Free Dictionary 对"out" / "set" 这种超高频词会返 7+ POS。后端已经合并同名 POS、上限 4，cache 写入也是已过滤后的形态。如果用户报某个词词性少了，可以放宽到 6。
-- LLM 兜底用的是 `generateText` + 手动 JSON 解析，没用 `generateObject`，避免 vercel-minimax-ai-provider 对结构化输出 schema 支持不全踩坑。
+> 配套 PRD §5.2 / §7.3 / §8.3 / §9。M0 + M1 的 todo 保留在 `todo.m0-m1.md` 供回查。
+> 分支：`m2-learning-records`。每完成一项把 `- [ ]` 改成 `- [x]` 并标证据。
+> 阻塞项标 `- [!]` 写明等什么。
 
 ---
 
-## Round 2 — 划词捕获 → sidepanel 注入语境（用户选 option 3 后追加）
+## 决策记录（2026-05-24 已确认）
 
-- [x] **R2.1** ✓ 新建 `lib/messaging.ts`：跨 context 共享的 `SelectionContext` 类型 + `BackgroundMessage` 联合类型（`ASK_WITH_SELECTION` / `SELECTION_READY`）
-- [x] **R2.2** ✓ `entrypoints/content/index.tsx` 重写：
-  - `mouseup` + `selectionchange` 监听（rAF 抖动稳定）
-  - PRD §8.2 命门一：`offsetWithinBlock()` 克隆 range 取 `toString().length` 得选区在块内字符偏移
-  - PRD §8.2 命门二：`Intl.Segmenter('en', { granularity: 'sentence' })` 切句取覆盖句（带粗分句退化方案）
-  - PRD §8.2 命门三：选区一出现立即同步抓全成 `SelectionContext` 存进 React state；点击 pill 时不再读 `getSelection()`
-  - 选区类型分类（word/phrase/sentence/multi）按 PRD §8.1
-  - TextQuoteSelector anchor（exact/prefix/suffix）准备 M2 回原文高亮用
-  - `crypto.randomUUID()` 给 id（PRD 说 ULID，后端 text 列接受任意字串，未来可换）
-  - Shadow DOM 内渲染浮窗 pill：选区右上 6px 偏移，`onMouseDown` 阻止清选区
-- [x] **R2.3** ✓ `entrypoints/background.ts`：
-  - `chrome.runtime.onMessage` 收 `ASK_WITH_SELECTION`
-  - `chrome.storage.session` 缓存 `SelectionContext`（PRD §10 MV3 SW 复活兜底）+ `latest-selection-id` 指针
-  - `chrome.sidePanel.open({ tabId })`（user gesture 链路保留）
-  - 转发 `SELECTION_READY` 给 sidepanel
-- [x] **R2.4** ✓ Sidepanel 布局重做：
-  - 删左右双栏；改单列 flex-col
-  - 顶部 header：左 title「English Agent」+ 右 History 图标按钮
-  - History 按钮用 shadcn `Popover` 包裹 `<ThreadList/>`（72×80 ScrollArea）—— 历史折进抽屉，主区域留给对话
-  - `ContextCard` 钉在 Thread 上方：选区类型 badge + 文章标题 + 选中文本 + 所在句 + 关闭按钮
-- [x] **R2.5** ✓ Sidepanel ↔ chat runtime 注入语境：
-  - `chrome.runtime.onMessage` 监听 `SELECTION_READY` → set React state
-  - 启动时从 `chrome.storage.session` 读 `latest-selection-id` 兜底恢复
-  - `DefaultChatTransport` 的 `body` 用函数式（thunk），每次发请求从 `useRef` 读最新 `selectionContext`，不重建 runtime 不丢对话
-  - 后端 `/api/chat` 早已在 system prompt 注入 selectionContext（route.ts 已就位）
-- [x] **R2.6** ✓ 新增 shadcn 组件：`popover` + `scroll-area`
-- [x] **R2.7** ✓ `pnpm compile` + `pnpm exec wxt build` 两边干净；manifest 含 `permissions: [sidePanel, storage, activeTab]`、`side_panel.default_path: sidepanel.html`
-
-**已知风险**：
-- `chrome.sidePanel.open()` 在 Chrome 某些版本对"content script 经 `runtime.sendMessage` 触发 → background 调用"是否还算 user gesture 有过历史问题。如果手测发现点 pill 不开 sidepanel，fallback 是把消息存好 + 让用户主动点扩展图标（`setPanelBehavior` 已设）。
-- 选区 pill 当前只在 TechCrunch 域名生效（content script `matches` 限定）。其他英文站留到 M3+ 引入"默认适配器"再放开。
+1. `/api/lookup` 改 POST 带 selectionContext；旧 GET 保留为只读 curl 调试用
+2. chat 类事件只在 `selection.type === 'word'` 时落 `deepchat`；非 word 选区仍然落 chat_messages 但不发 EncounterEvent
+3. 学习记录点条目 = 切回 Chat tab + 重新加载语境卡。**M4 必须支持重放历史对话内容**：因此 `chat_messages` 务必每条都按 `threadId` (= selectionContext.id) + role + content + createdAt 完整存好，schema 已就位无需改
+4. 被动重逢扫描的 lemmatize **放前端做**，浏览器装 wink-lemmatizer（~50KB gzip），节省后端资源 + 避免把全文 POST 上去的隐私顾虑
 
 ---
 
-## Step 0 — Postgres 准备（用户执行）
+## Context
 
-- [ ] **0.1** 你在 Docker 中已有的 Postgres 容器里创建新 database `english_agent`，不影响已有库
-  - 验证：`docker exec -it <你的容器> psql -U <admin> -c '\l'` 输出包含 `english_agent`
-- [ ] **0.2** 把最终的 `DATABASE_URL` 告诉我（或在我建出 `server/.env.local` 后由你填入）
-  - 验证：`server/.env.local` 中 `DATABASE_URL=postgres://...` 存在且非空
+M0/M1 已上线（main 分支 commit 链 `da9dc45..e486300`）：选区捕获、pill、sidepanel + assistant-ui Thread、`/api/chat` 流式接 MiniMax、`/api/lookup` 接 GLM 翻译、`/api/tts` 接 MiniMax speech-2.8-hd、`dictionary_entries` / `tts_cache` 缓存。
 
----
+本期 M2 目标：让"每次查询 / 深聊 / 被动重逢"都成为 `EncounterEvent` 数据流入库，sidepanel 出"学习记录"标签让用户回看；点条目能跳回原对话 / 高亮原文。这是 PRD §12 学习模型（FSRS / HLR）的命脉数据，**晚一天积累就少一天数据**。
 
-## Step 1 — Next.js 16 后端官方 init
-
-- [x] **1.1** ~~在项目根执行 `npx create-next-app@latest server ...`~~ ✓ 完成。生成 `/Users/zilin/side/english-agent/server/`，含 `package.json`、`src/app/page.tsx`、`next.config.ts`、`tsconfig.json`、`postcss.config.mjs`、`eslint.config.mjs`，并自动 `git init`
-- [x] **1.2** Next.js 版本 ✓ —— `"next": "16.2.6"`，`"react": "19.2.4"`
-- [x] **1.3** `server/.gitignore` ✓ 含 `/node_modules`、`/.next/`；`.env*.local` 默认未列，**Step 11.1 一起处理**
+`schema.ts` 已有 `selection_contexts` / `encounter_events` / `chat_messages`，本期不动结构，只接通数据通路 + UI 露出。
 
 ---
 
-## Step 2 — 后端依赖安装
+## Phase A — 后端 EncounterEvent 接通
 
-- [x] **2.1** ✓ `ai@^6.0.191`、`@ai-sdk/react@^3.0.193`、`@assistant-ui/react@^0.14.7`、`@assistant-ui/react-ai-sdk@^1.3.26`、`vercel-minimax-ai-provider@^0.0.2`、`zod@^4.4.3` 全装好
-- [x] **2.2** ✓ `drizzle-orm@^0.45.2`、`postgres@^3.4.9`
-- [x] **2.3** ✓ `drizzle-kit@^0.31.10` 装到 devDeps
+- [ ] **A.1** `lookupWord` 返回 lemma + pos 给上层使用
+  - lemma 已有；pos 从 Free Dictionary 首个 `partsOfSpeech[].pos` 取；LLM 兜底也填一个 fallback 字符串
+  - 同时计算 `itemKey = "${lemma}#${pos}"`，作为 LookupResult 顶层字段
+  - 验证：`curl /api/lookup?word=outed` 响应有 `itemKey: "out#noun"`（或类似），前端目前不消费但事件落库需要
 
-**Step 2 验证补丁**：
-- `vercel-minimax-ai-provider@0.0.2` 导出的 `minimax` 实际是 Anthropic-format 的 `minimaxAnthropic`（另外还有 `minimaxOpenAI`）；env 变量名确认是 `MINIMAX_API_KEY`
-- 该 provider 的 `MinimaxChatModelId` 类型显式列出 `MiniMax-M2 | MiniMax-M2.1 | MiniMax-M2.1-lightning`，没列 `MiniMax-M2.7`（fallback `string` 也接受）。**采用 `MiniMax-M2.1`**，避免用 type 未列的 ID。后续可换到任意 string。
+- [ ] **A.2** `server/src/lib/encounter.ts` —— `recordEncounter(input)` 通用工具
+  - 参数：`{ surfaceForm, itemKey, contextRef, eventType, outcome? }`
+  - 内部生成 id，insert encounter_events，**异常吞掉，不阻塞主流程**
+  - 验证：手调一次，DB `encounter_events` 多一行
 
----
+- [ ] **A.3** `server/src/lib/selection-context.ts` —— `upsertSelectionContext(ctx)`
+  - PK = ctx.id，存在则 `onConflictDoNothing`；不存在则 insert
+  - 把前端 SelectionContext schema 字段映射成 DB 列名（camelCase ↔ snake_case）
+  - 验证：从 sidepanel 触发任意一次有 selectionContext 的请求，DB `selection_contexts` 多一行
 
-## Step 3 — Drizzle 配置与 schema
+- [ ] **A.4** `/api/lookup` 改 POST，接受 `{ word, selectionContext? }`
+  - 流程：upsertSelectionContext (如有) → lookupWord → recordEncounter(eventType:'lookup', itemKey, contextRef=selectionContext?.id ?? null)
+  - 旧 GET 保留供 curl 调试用，但前端 WordCard 切到 POST
+  - 同步改 `components/word-card.tsx`：增加 `selectionContext?: SelectionContext` prop，从 sidepanel App.tsx 传入
+  - 验证：选个单词 → WordCard 出来 → DB `encounter_events` 多一行 lookup 事件 + `selection_contexts` 多一行
 
-- [x] **3.1** ✓ `server/drizzle.config.ts` 用官方 `defineConfig`；显式加载 `.env.local`（`dotenv` 已装 dev dep）
-- [x] **3.2** ✓ `server/src/db/schema.ts`：`selection_contexts` + `encounter_events`（pgEnum eventType/outcome） + `chat_messages`，并导出 `$inferSelect/$inferInsert` 类型
-- [x] **3.3** ✓ `server/src/db/client.ts`：`drizzle(postgres(url))` 单例，`globalThis.__pg` 避免 dev 热重启泄漏
-- [x] **3.4** ✓ `server/.env.local`：`DATABASE_URL=`（待填）+ `MINIMAX_API_KEY=`（已填用户提供的开发 key）
-- [x] **3.5** ✓ 已在 `fullstack-starter-postgres` 容器（端口 5432）`CREATE DATABASE english_agent`；`server/.env.local` 写好 `DATABASE_URL=postgres://postgres:dev_password_123@localhost:5432/english_agent`；`drizzle-kit push --force` 应用成功；`\dt` 验证三表 + 四个 pgEnum 全部到位
+- [ ] **A.5** `/api/chat` onFinish 落库
+  - 进入路由先 upsertSelectionContext（如有）
+  - streamText 加 `onFinish` 回调：写 chat_messages（user 一条 + assistant 一条）+ 当 selection.type === 'word' 时调 lookupWord 拿 itemKey + recordEncounter(eventType:'deepchat')
+  - 所有落库都是 fire-and-forget，**不阻塞 stream 关闭**
+  - 验证：跟 MiniMax 对一轮，DB `chat_messages` +2 行，单词类选区时 `encounter_events` +1 行 deepchat
 
----
+- [ ] **A.6** `GET /api/history` 路由
+  - query: `?limit=20&before=<ts>` 时间游标分页
+  - 返回：按 itemKey GROUP BY，每条 `{ itemKey, lastSurfaceForm, totalCount, lastTs, lastContextRefId, eventTypes:[...] }`，按 lastTs DESC
+  - 验证：curl 看到 A.4 / A.5 产生的事件按预期聚合
 
-## Step 4 — `/api/chat` 路由
-
-- [x] **4.1** ✓ `server/src/lib/minimax.ts` 导出 `minimax = createMinimax({ apiKey })`（Anthropic-format，符合 MiniMax 官方文档推荐）+ `DEFAULT_MODEL_ID = 'MiniMax-M2.1'`
-- [x] **4.2** ✓ `server/src/app/api/chat/route.ts`：`streamText` + `await convertToModelMessages`（AI SDK v6 现在返回 Promise）+ `toUIMessageStreamResponse()`；含 `OPTIONS` 处理与 `dynamic = 'force-dynamic'`；PRD §6.1 system prompt 注入选区上下文
-- [x] **4.3** ✓ `server/next.config.ts` 仅 dev 期对 `/api/:path*` 注入 `Access-Control-Allow-Origin: *` 等 CORS 头
-
----
-
-## Step 5 — 后端起服并 smoke test
-
-- [x] **5.1** ✓ `cd server && pnpm exec tsc --noEmit` 退出码 0（首跑发现 `convertToModelMessages` 在 AI SDK v6 改为 async，已 `await`）
-- [!] **5.2** 由用户启动 `cd server && pnpm dev`（DATABASE_URL + MINIMAX_API_KEY 都已填好）
-- [!] **5.3** 后端起来后 curl smoke test `/api/chat`
-
----
-
-## Step 6 — Sidepanel entrypoint 文件骨架
-
-- [x] **6.1** ✓ `entrypoints/sidepanel/index.html`
-- [x] **6.2** ✓ `entrypoints/sidepanel/main.tsx`（StrictMode + createRoot + import style.css）
-- [x] **6.3** ✓ `entrypoints/sidepanel/App.tsx` 占位
-- [!] **6.4** 加载 `.output/chrome-mv3` 看到 sidepanel —— 等用户手测。**已经验证 `manifest.json` 含 `side_panel.default_path: sidepanel.html`**
+- [ ] **A.7** Typecheck + drizzle migrations 都没变（只新增 lib 文件、改路由）；commit phase A
 
 ---
 
-## Step 7 — Tailwind + shadcn 接入扩展
+## Phase B — Sidepanel 学习记录 UI
 
-- [x] **7.1** ✓ `tailwindcss`、`@tailwindcss/vite` 装到 devDeps
-- [x] **7.2** ✓ `@assistant-ui/react`、`@assistant-ui/react-ai-sdk`、`ai`、`@ai-sdk/react` 装到 deps
-- [x] **7.3** ✓ `wxt.config.ts` 加 `vite: () => ({ plugins: [tailwindcss()] })`
-- [x] **7.4** ✓ `entrypoints/sidepanel/style.css` 由 shadcn 写入 Tailwind v4 完整模板（`@import "tailwindcss"` + 主题变量 + oklch 色板 + layer base）
-- [x] **7.5** ✓ shadcn init（用 `--template vite --base radix --preset nova --yes --force`）；首跑因 WXT 不被识别失败 → 临时 stub `vite.config.ts` 让 shadcn 认出 Vite 框架 → init 后删 stub
-- [x] **7.6** ✓ `components/assistant-ui/thread.tsx` + 7 个支撑组件（attachment / markdown-text / reasoning / tool-fallback / tool-group / tooltip-icon-button）
-- [x] **7.7** ✓ `components/assistant-ui/thread-list.tsx`
-- [x] **7.8** ✓ 修了 `tsconfig.json`：显式 `baseUrl: "."` + `paths: { "@/*": ["./*"] }`，shadcn 才会把组件正确写入项目内（首跑因为 WXT 的 `paths: ["../*"]` 来自 `.wxt/tsconfig.json`，shadcn 误解析到 `/Users/zilin/side/components/`；已清理误写文件并重 add）
+- [ ] **B.1** 加 shadcn `tabs` 组件 + lucide `BookOpen` 图标
+  - `pnpm dlx shadcn@latest add tabs`
+  - 验证：`components/ui/tabs.tsx` 生成
 
----
+- [ ] **B.2** Sidepanel 主区域改 Tabs：`Chat | Records`
+  - Chat tab 内是现有 `<Thread />`；Records tab 是下面 B.3 的组件
+  - ContextCard 和 WordCard 仍然钉在 tabs 上方（两个 tab 共用同一个语境）
+  - 验证：手测可切换，Chat tab 体验不变
 
-## Step 8 — Sidepanel App 接 assistant-ui
+- [ ] **B.3** `components/records-list.tsx` —— 学习记录列表
+  - 拉 `/api/history`；每条卡片：surfaceForm 大字 + lemma#pos 小字 + 次数 badge + 最近时间相对值 ("2h ago")
+  - loading / empty / error 三态
+  - 点条目 → `onSelect(record)` 回调（B.4 接住）
 
-- [x] **8.1** ✓ `entrypoints/sidepanel/App.tsx`：`AssistantRuntimeProvider` + `useChatRuntime({ transport: new DefaultChatTransport({ api: ... }) })`（AI SDK v6 用 transport 不再用 `api` shorthand）+ `<TooltipProvider>` 包裹 + 左边 `<ThreadList/>` + 右边 `<Thread/>`，用 Tailwind grid 布局
-- [x] **8.2** ✓ `.env.local` 含 `WXT_BACKEND_URL=http://localhost:3000`
-- [!] **8.3** 手测——sidepanel 真正渲染 assistant-ui Thread
-
----
-
-## Step 9 — Content Script Shadow DOM 骨架
-
-- [x] **9.1** ✓ `entrypoints/content/index.tsx`（迁到目录形式以支持 JSX）：`defineContentScript({ matches: ['*://techcrunch.com/*', '*://*.techcrunch.com/*'], cssInjectionMode: 'ui' })` + `createShadowRootUi({ position: 'overlay', alignment: 'bottom-right', zIndex: 2147483647 })`；React 18+ `createRoot` 在 Shadow DOM 容器里渲染；删了旧的 `entrypoints/content.ts`
-- [!] **9.2** 手测——TechCrunch 文章页右下出现 "english-agent: shadow ok"
-- [!] **9.3** 手测——DevTools 看 shadow root 样式隔离生效
+- [ ] **B.4** 点条目的交互
+  - 自动切到 Chat tab + load 对应 `lastContextRef` 的 SelectionContext 进 React state
+  - 通过 background 发 `HIGHLIGHT_ANCHOR` 给 content script（依赖 D.1 / D.2 完工）
+  - 验证：手测点列表项后 Chat tab 顶部的 ContextCard 切换到对应选区
 
 ---
 
-## Step 10 — Background 占位
+## Phase C — 被动重逢扫描
 
-- [x] **10.1** ✓ `entrypoints/background.ts` 调用 `chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true })`，错误用 `.catch` 兜底
-- [x] **10.1.1** ✓ 删了 starter `entrypoints/popup/` 与 `assets/`（PRD 未指派职责；popup 存在会让 manifest 写出 `action.default_popup` 拦截图标点击，sidepanel 永远打不开）
-- [x] **10.1.2** ✓ `wxt.config.ts` manifest 显式 `action: { default_title: 'English Agent' }`，让工具栏图标存在且可点击触发 sidepanel
-- [!] **10.2** 手测——点扩展图标自动开 sidepanel
+- [ ] **C.1** `GET /api/known-items` —— 返回当前用户已查 itemKey 数组（本期单用户，全量返）
+  - 仅返字符串数组（去重），方便 content script 当 set 用
+  - 验证：curl 看到 Phase A 积累的 itemKey 全在
 
----
+- [ ] **C.2** Content script 拉 known-items + 缓存
+  - 启动时拉一次，写 chrome.storage.session key `english-agent:known-items`（5 分钟 TTL）
+  - 5 分钟内重复访问 TechCrunch 文章直接读 cache
+  - 验证：DevTools Application → Storage 看到对应 key
 
-## Step 11 — 环境变量与忽略
+- [ ] **C.3** 扫描 + 过滤
+  - 走 `findContentBlock` 一样的 block selector，所有 block textContent 拼起来
+  - `Intl.Segmenter('en', {granularity:'word'})` 切词，对每个 token wink-lemmatize（**前端要装 wink-lemmatizer 一份**，浏览器侧也用）
+  - 命中 known-items 集合 → 进候选；过滤掉本会话用户主动选过的（用 React state 维护一个 Set）
+  - 等待 idle（document.readyState === 'complete' + setTimeout 1s）才扫，不影响首屏
 
-- [x] **11.1** ✓ `.gitignore` 已含 `.env.local`、`.env.*.local`、`server/.env.local`、`server/.next`、`server/.turbo`、`server/out`、`server/drizzle/meta`、`.output`、`.wxt`
-- [x] **11.2** ✓ Step 8.2 已建
-
----
-
-## Step 12 — 端到端验证
-
-- [!] **12.1** 等用户：`cd server && pnpm dev` 启动
-- [x] **12.2** ✓ `pnpm exec wxt build` 干净；`.output/chrome-mv3/manifest.json` 已生成，含正确 `side_panel.default_path`、`content_scripts`、`background`、`action`、`permissions`
-- [!] **12.3** 手测：加载 `.output/chrome-mv3` 到 Chrome
-- [!] **12.4** 手测：点扩展图标 → sidepanel → Thread 渲染
-- [!] **12.5** 手测：输入"用一句话解释 idempotent" → MiniMax 流式响应
-- [!] **12.6** 手测：TechCrunch 文章页看到 shadow 占位泡
-- [x] **12.7** ✓ `docker exec fullstack-starter-postgres psql -U postgres english_agent -c '\dt'` 输出 `chat_messages`、`encounter_events`、`selection_contexts` 三表
-- [x] **12.8** ✓ 扩展 `pnpm compile` + 后端 `pnpm exec tsc --noEmit` 退出码都 0
+- [ ] **C.4** `POST /api/encounter` 写 `passive_reencounter`
+  - 前端 batch 发送：扫到的命中一次性 POST 数组，后端循环 recordEncounter
+  - 后端去重：同一 url + lemma + 今天 已经有事件则 skip
+  - 不上 UI（PRD §5.2 明确"本期只埋点"）
+  - 验证：访问含已查词的文章，DB 多 N 行 passive_reencounter，且当天重复访问不会重复打点
 
 ---
 
-## 阻塞清单（[!] 汇总）
+## Phase D — 回原文高亮
 
-**等用户操作（按建议顺序）**：
+- [ ] **D.1** Content script `HIGHLIGHT_ANCHOR` message handler
+  - 接收 `{ exact, prefix, suffix }` —— PRD §5.1 TextQuoteSelector 形态
+  - 当前 DOM 内 exact substring 匹配（先简单 exact，未来再 fuzzy）
+  - 找到后 `scrollIntoView({ behavior: 'smooth', block: 'center' })` + 临时包 `<span style="background:yellow">` 2s 后淡出移除
+  - 验证：DevTools console 手动 `chrome.runtime.sendMessage({type:'HIGHLIGHT_ANCHOR', payload:{exact:'...',prefix:'',suffix:''}})` 能命中
 
-1. **建库**：在你的 Docker postgres 容器里 `CREATE DATABASE english_agent;`
-2. **填 env**：把连接串写进 `server/.env.local` 的 `DATABASE_URL=postgres://...`（`MINIMAX_API_KEY` 我已填好你给的开发 key）
-3. **建表**：`cd server && pnpm exec drizzle-kit push`
-4. **起后端**：`cd server && pnpm dev`（监听 http://localhost:3000）
-5. **起扩展**：另开终端 `pnpm dev`（项目根；WXT 会自动开一个干净 Chrome profile 加载扩展）
-6. **手测清单**：12.3–12.7（图标点开 sidepanel、与 MiniMax 对话、TechCrunch 页面看到 shadow 泡）
+- [ ] **D.2** Background 中继消息到正确 tabId
+  - sidepanel 发 `HIGHLIGHT_REQUEST { selectionContextId }` 到 background
+  - background 查 storage / DB 拿 anchor，找到 SelectionContext.source.url 对应的 tab，sendMessage 给那个 tab 的 content script
+  - 验证：sidepanel 点 records 项 → 原文 tab 滚到 + 闪黄
+  - 边角：原文 tab 已关 → 弹 toast 提示"原文已关闭"
 
-完成 1–5 后，所有 `[!]` 项基本可自验证完成。
+- [ ] **D.3** （可选）fuzzy 回定位
+  - exact 匹配失败时用 prefix + suffix 做窗口模糊搜
+  - 等真碰到失败 case 再做
 
-## 已知技术注记
+---
 
-- **AI SDK v6** 把 `convertToModelMessages` 改成 async；`useChat`/runtime 也不再用 `api` shorthand，必须显式构造 `DefaultChatTransport`。代码已按此调整。
-- **vercel-minimax-ai-provider@0.0.2** 默认走 Anthropic-format 端点 `https://api.minimax.io/anthropic/v1`。如果用户的 `sk-cp-` 开发 key 不对那个端点授权，把 `server/src/lib/minimax.ts` 的 `createMinimax` 换成 `createMinimaxOpenAI`（OpenAI-format，端点 `https://api.minimax.io/v1`）。
-- **shadcn 解析 `@/*`** 不走 tsconfig extends 链——它读 project tsconfig 的 `paths` 字段并按 tsconfig 所在目录做相对解析。WXT 默认 `paths` 在 `.wxt/tsconfig.json` 里写 `["../*"]`，被 shadcn 误解析到项目外。**修复**：项目根 `tsconfig.json` 显式覆盖 `paths: { "@/*": ["./*"] }`。
-- **popup 删除**：starter popup 的 `manifest.type=browser_action` 让 WXT 写出 `action.default_popup`，会拦截图标点击导致 sidepanel 永远打不开。直接删 `entrypoints/popup/`。
+## 验收
+
+`m2-learning-records` 合回 main 前必须满足：
+
+1. 选个单词查一次 → DB `encounter_events` 有一行 `lookup`
+2. 跟 MiniMax 深聊一轮 → DB 有一行 `deepchat`
+3. Sidepanel `Records` tab 看到刚才那两次记录
+4. 点 Records 列表条目 → 跳回原文 + 高亮（D 完工）
+5. 访问含已查词的 TechCrunch 文章 → DB 多若干 `passive_reencounter`，UI 不变
+6. `pnpm compile` 和 `cd server && pnpm exec tsc --noEmit` 都 0 错误
+7. `pnpm exec wxt build` 干净
+
+---
+
+## 不在本期范围
+
+- M3 全文双语翻译 / `/translate` 路由（下一期）
+- M1 收尾：§8.1 完整 popup + 快捷按钮 / 站点适配器框架 / 默认适配器（推迟）
+- FSRS 调度器实际计算 / 复习卡片 / 移动推送（M4+，PRD 明确排除）
+- 测试套件（架构稳定后批量补）
+
+---
+
+## 风险记录
+
+1. **A.5 onFinish vs stream 关闭**：MiniMax `/api/chat` 用 `streamText` + `toUIMessageStreamResponse()`，Next 16 边缘运行时下 `onFinish` 不一定能跑完才 close。落库放 setImmediate / Promise 不 await，绝对不阻塞响应。
+2. **C.3 扫描性能**：长文章逐词 lemmatize 可能阻塞主线程。先 hard cap 处理前 5000 字（约一篇文章），不够再上 web worker。
+3. **C.3 浏览器侧 wink-lemmatizer 体积**：~50KB gzipped，扩展 bundle 影响可接受；如果超预算改用 cheap suffix-strip 算法。
+4. **D.1 exact 匹配命中错误位置**：选区文本可能在文章里重复出现。用 prefix + suffix 的前 6 字符做唯一性 disambiguation。
+5. **/api/encounter POST 暴露给浏览器**：本期单用户开发期无鉴权也 OK；上线前必须加身份层（cookie / JWT）。
