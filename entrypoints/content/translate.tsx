@@ -152,13 +152,17 @@ function injectTranslation(
   node.className = TRANSLATION_CLASS;
   node.setAttribute(BLOCK_ID_ATTR, result.id);
 
+  // 读原段落的实际渲染颜色，让译文跟着页面文字色走（自适应浅色/暗色页面）。
+  // 用 opacity 整体淡化，而不是硬编码颜色，dark mode 上白字也能正确变成"半透明白"。
+  const inheritedColor = window.getComputedStyle(anchor).color || 'inherit';
+
   if (result.error) {
-    // 失败：小红字 + retry 按钮，inline 显示
+    // 失败：红色高对比，浅色/暗色背景红字都可见
     node.setAttribute(
       'style',
       [
         'margin: 4px 0 12px 0 !important',
-        'color: rgba(220,38,38,0.85) !important',
+        'color: #ef4444 !important',
         'font-family: inherit !important',
         'font-size: 0.9em !important',
         'line-height: 1.5 !important',
@@ -187,12 +191,13 @@ function injectTranslation(
     btn.addEventListener('click', onRetry);
     node.appendChild(btn);
   } else {
-    // 正常译文：浅色文字，无背景无边线
+    // 正常译文：继承原段落的实际颜色 + opacity 整体淡化区分
     node.setAttribute(
       'style',
       [
         'margin: 4px 0 14px 0 !important',
-        'color: rgba(0,0,0,0.55) !important',
+        `color: ${inheritedColor} !important`,
+        'opacity: 0.65 !important',
         'font-family: inherit !important',
         'font-size: 0.95em !important',
         'line-height: 1.55 !important',
