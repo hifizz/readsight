@@ -63,20 +63,23 @@ GLM-4-Flash 已经在 M2 接好做翻译，中文母语 + 免费 + 快，复用�
 
 ---
 
-## Phase D — 收尾打磨
+## Phase D — 收尾打磨 ✅
 
-- [ ] **D.1** 顶部进度条 UI（可选）
-  - 翻译中显示一条细窄进度条 1px 高，从 0% 涨到 100%
-  - 或者按钮 spinning 就够了，先 spinning 后续再加进度条
-  - 验证：手测进度可见
+- [x] **D.1** ✓ FAB 内嵌进度文案 `翻译中 N/M`，不再单做顶部进度条
+- [x] **D.2** ✓ messaging.ts 加 `TRANSLATE_BLOCKS` 类型 + `TranslationResult` 共享 interface
+- [x] **D.3** 兼容 M2 高亮：译文 `<div>` 是原 block 的 sibling 不是 child，`block.textContent` 仍只读到原文，prefix+exact+suffix 匹配不受影响 —— 等手测确认
 
-- [ ] **D.2** messaging.ts 加新类型
-  - `TRANSLATE_BLOCKS` / `TRANSLATION_RESULTS` / `RETRY_BLOCK` / `TRANSLATION_RESULT`
-  - 共享类型在 `lib/messaging.ts` 同步
+---
 
-- [ ] **D.3** 兼容 M2 高亮路径
-  - 注入译文节点不能干扰 anchor 回原文的 prefix+exact+suffix 匹配
-  - 验证：先翻译全文 → 再切到 Records tab 点条目 → 高亮还要能命中原文 block
+## Round 2 — 用户反馈改进
+
+- [x] **R2.1** ✓ 超时机制：`translateBatchViaBackground` 用 `Promise.race` 12s timeout，超时块走 retry 路径不阻塞其他批
+- [x] **R2.2** ✓ 渐进式渲染：`BATCH_SIZE` 5 → 1，每段独立 HTTP，翻好一段立刻 inject
+- [x] **R2.3** ✓ 样式重做：去 background + 左边线，纯 `rgba(0,0,0,0.55)` 浅色文字，仅靠颜色区分译文 vs 原文，不影响布局
+- [x] **R2.4** ✓ Mozilla Readability 接入：`buildReadabilityAllowlist()` 用 `Readability(docClone).parse()` 拿真正的正文 sentence 集合；过滤掉广告 / 导航 / 评论区不浪费 token
+  - 额外祖先黑名单：`nav, aside, footer, header, [role=navigation/...], .related-*, .sidebar, .comments, .ad*, .promo`
+  - 链接占比 >50% 的 block（导航列表）也跳过
+- [x] **R2.5** ✓ 砍掉 MiniMax 兜底：translate.ts 纯 Zhipu GLM-4-Flash 路径，失败走前端 retry 按钮 —— 实测 2 段 2.7s
 
 ---
 

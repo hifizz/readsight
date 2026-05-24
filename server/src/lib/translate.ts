@@ -21,11 +21,9 @@ import { inArray } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { translations } from '@/db/schema';
 import { zhipuFlash, isZhipuConfigured } from './zhipu';
-import { minimax, DEFAULT_MODEL_ID } from './minimax';
 
 const TARGET_LANG = 'zh-CN' as const;
 const MODEL_LABEL_ZHIPU = 'glm-4-flash';
-const MODEL_LABEL_MINIMAX = DEFAULT_MODEL_ID;
 
 export interface TranslateResult {
   original: string;
@@ -150,32 +148,28 @@ export async function translateBatch(texts: string[]): Promise<TranslateResult[]
   }
   if (miss.length === 0) return results;
 
-  // 2) LLM 批量翻译 miss 段
-  //    首选 Zhipu GLM-4-Flash（M2 Phase D 接好），失败 fallback MiniMax thinking
+  // 2) LLM 批量翻译 miss 段 —— 纯 Zhipu GLM-4-Flash 路径
+  //    用户决策：去掉 MiniMax 兜底，GLM 失败就走前端 retry 按钮，更清爽
+  if (!isZhipuConfigured() || !zhipuFlash) {
+    for (const m of miss) {
+      results[m.index] = {
+        original: m.text,
+        zh: '',
+        source: 'llm',
+        error: 'zhipu_not_configured',
+      };
+    }
+    return results;
+  }
   let translated: string[] | null = null;
-  let usedModel = MODEL_LABEL_ZHIPU;
-
-  if (isZhipuConfigured() && zhipuFlash) {
-    try {
-      translated = await callLLMBatch(miss.map((m) => m.text), zhipuFlash, MODEL_LABEL_ZHIPU);
-    } catch (err) {
-      console.warn(
-        `[translate] zhipu threw, falling back to MiniMax:`,
-        err instanceof Error ? err.message : err,
-      );
-    }
-  }
-  if (!translated) {
-    try {
-      usedModel = MODEL_LABEL_MINIMAX;
-      translated = await callLLMBatch(miss.map((m) => m.text), minimax(DEFAULT_MODEL_ID), MODEL_LABEL_MINIMAX);
-    } catch (err) {
-      console.warn(`[translate] MiniMax also threw:`, err);
-    }
+  try {
+    translated = await callLLMBatch(miss.map((m) => m.text), zhipuFlash, MODEL_LABEL_ZHIPU);
+  } catch (err) {
+    console.warn(`[translate] zhipu threw:`, err instanceof Error ? err.message : err);
   }
 
   if (!translated) {
-    // 整批失败：把 miss 全部标 error
+    // 整批失败：把 miss 全部标 error，前端会挂 retry 按钮
     for (const m of miss) {
       results[m.index] = {
         original: m.text,
@@ -187,21 +181,18 @@ export async function translateBatch(texts: string[]): Promise<TranslateResult[]
     return results;
   }
 
-  // 3) 回填 + 入缓存（写库时按 zhipu 模型 hash，跟读时一致）
+  // 3) 回填 + 入缓存
   const inserts: Array<typeof translations.$inferInsert> = [];
   for (let i = 0; i < miss.length; i++) {
     const m = miss[i];
     const zh = translated[i];
     results[m.index] = { original: m.text, zh, source: 'llm' };
-    // 用同样的 hash（基于 ZHIPU 模型名计算）写库，下次读 zhipu cache 能命中
-    // 即使本次实际跑的是 MiniMax fallback，缓存 key 仍按 zhipu —— 因为 cache 是
-    // "这段文本的中文翻译"，跟翻它的模型本身关系不大，要的是稳定 key
     inserts.push({
       hash: m.hash,
       originalText: m.text,
       zh,
       targetLang: TARGET_LANG,
-      model: usedModel, // 记录实际跑的模型，便于排查
+      model: MODEL_LABEL_ZHIPU,
     });
   }
   if (inserts.length > 0) {
