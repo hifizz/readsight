@@ -228,6 +228,17 @@ function extractArticleBlocks(
   if (!isRescan) {
     cachedArticleRoot = findArticleRoot();
     cachedReadabilityAllow = buildReadabilityAllowlist();
+  } else if (!cachedArticleRoot || !document.contains(cachedArticleRoot)) {
+    // SPA 整树 re-render 时缓存的 article 节点可能被换掉（detached），
+    // 此时 querySelectorAll 拉不到新内容。重新定位 root；但仍跳过 Readability 重判定。
+    const refreshed = findArticleRoot();
+    if (process.env.NODE_ENV !== 'production') {
+      console.log(
+        '[english-agent] rescan: cachedArticleRoot detached, refreshing',
+        { old: cachedArticleRoot, new: refreshed },
+      );
+    }
+    cachedArticleRoot = refreshed;
   }
   const root = cachedArticleRoot ?? findArticleRoot();
   // Rescan 不再用 Readability 过滤 —— 新内容默认算正文（信任初始 root 判定）
@@ -777,6 +788,11 @@ function rescanForNewBlocks(mode: TranslateMode): void {
   // 的段落经常通不过 Readability 的飘忽启发式，无法续翻。
   const all = extractArticleBlocks(mode, true);
   const added = orchestrator.addBlocks(all);
+  if (process.env.NODE_ENV !== 'production') {
+    console.log(
+      `[english-agent] rescan(${mode}): scanned=${all.length}, added=${added}, total=${orchestrator.totalCount}`,
+    );
+  }
   if (added > 0) {
     setModuleState({ ...moduleState, total: orchestrator.totalCount });
   }
