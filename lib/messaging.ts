@@ -43,7 +43,9 @@ export type BackgroundMessage =
       payload: { blocks: Array<{ id: string; text: string }> };
     }
   /** Background → content script：右键菜单 / 快捷键触发的"开关全文翻译" */
-  | { type: 'TOGGLE_TRANSLATE' };
+  | { type: 'TOGGLE_TRANSLATE' }
+  /** Content → background：翻译状态切换通知，让 background 更新右键菜单标题 */
+  | { type: 'TRANSLATE_STATE_CHANGED'; payload: { active: boolean } };
 
 /** /api/translate 单块结果 —— 跟后端 route 返回 shape 同步。 */
 export interface TranslationResult {

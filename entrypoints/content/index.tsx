@@ -16,7 +16,7 @@ import { useEffect, useState } from 'react';
 import type { SelectionContext, SelectionType, BackgroundMessage } from '@/lib/messaging';
 import { resolveLemma } from '@/lib/lemmatize';
 import { Sparkles } from 'lucide-react';
-import { TranslateFab, togglePageTranslation } from './translate';
+import { TranslateFab, togglePageTranslation, onTranslateStateChange } from './translate';
 import { SelectionPopup, openPopup, useIsPopupOpen } from './popup';
 
 const BACKEND = import.meta.env.WXT_BACKEND_URL ?? 'http://localhost:4010';
@@ -68,7 +68,9 @@ export default defineContentScript({
       name: 'english-agent-fab',
       position: 'overlay',
       alignment: 'bottom-right',
-      zIndex: 2147483646,
+      // 32-bit int 上限，跟很多站点同优先级时按 DOM 顺序决出胜负；
+      // shadowHost append 较早，但因为是 body 子节点，多数情况能压住。
+      zIndex: 2147483647,
       anchor: 'body',
       onMount: (container) => {
         const host = document.createElement('div');
@@ -80,6 +82,18 @@ export default defineContentScript({
       onRemove: (root) => root?.unmount(),
     });
     fabUi.mount();
+
+    // 把翻译状态变化通知 background，让右键菜单标题动态更新
+    onTranslateStateChange((status) => {
+      chrome.runtime
+        .sendMessage({
+          type: 'TRANSLATE_STATE_CHANGED',
+          payload: { active: status === 'active' },
+        } satisfies BackgroundMessage)
+        .catch(() => {
+          /* background 没起来就吞 */
+        });
+    });
 
     // 被动重逢扫描（PRD §5.2 / §8.2 弱正信号）—— 在 idle 时扫一次
     schedulePassiveScan();

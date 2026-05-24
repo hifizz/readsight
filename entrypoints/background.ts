@@ -50,17 +50,16 @@ export default defineBackground(() => {
     .setPanelBehavior({ openPanelOnActionClick: true })
     .catch((err: unknown) => console.error('[english-agent] setPanelBehavior failed', err));
 
-  // 右键菜单：单一条目"翻译/撤销全文 (English Agent)"。
+  // 右键菜单：单一条目，按 active tab 的翻译状态切换标题"翻译" ⇄ "撤销翻译"
   // 在 onInstalled 里 create，避免 SW 重启 / 扩展更新时重复 create 抛"duplicate id"
   chrome.runtime.onInstalled.addListener(() => {
     try {
       chrome.contextMenus.create({
         id: CONTEXT_MENU_ID,
-        title: '翻译 / 撤销 (English Agent)',
+        title: '翻译 (English Agent)',
         contexts: ['page', 'selection'],
       });
     } catch (err) {
-      // 重复 id 时 chrome.runtime.lastError 会被设置；create 同步返回
       console.warn('[english-agent] contextMenus.create:', err);
     }
   });
@@ -120,6 +119,17 @@ export default defineBackground(() => {
         .then((results) => sendResponse({ ok: true, results }))
         .catch((err) => sendResponse({ ok: false, error: String(err) }));
       return true;
+    }
+    if (message.type === 'TRANSLATE_STATE_CHANGED') {
+      // content script 通知翻译开 / 关 → 更新右键菜单标题
+      // 注意：chrome.contextMenus 是全局的，多 tab 时按最近活动 tab 状态展示
+      const title = message.payload.active ? '撤销翻译 (English Agent)' : '翻译 (English Agent)';
+      chrome.contextMenus
+        .update(CONTEXT_MENU_ID, { title })
+        .catch?.(() => {
+          /* 菜单还没 create / 已 remove，忽略 */
+        });
+      return false;
     }
     return false;
   });

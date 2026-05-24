@@ -13,8 +13,8 @@
  *     复制中文做二次划词，也便于撤销时 querySelectorAll 全清
  *   - 块 → element 映射用 data-eag-id 属性绑定
  */
-import { useSyncExternalStore } from 'react';
-import { Languages, X } from 'lucide-react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { Languages, X, ChevronDown } from 'lucide-react';
 import { Readability, isProbablyReaderable } from '@mozilla/readability';
 import type { BackgroundMessage, TranslationResult } from '@/lib/messaging';
 
@@ -175,30 +175,34 @@ function restorePreserves(translated: string, restoreMap: Map<string, string>): 
   return out;
 }
 
-function extractArticleBlocks(): ArticleBlock[] {
-  const root = findArticleRoot();
-  const allow = buildReadabilityAllowlist();
+export type TranslateMode = 'article' | 'page';
+
+function extractArticleBlocks(mode: TranslateMode = 'article'): ArticleBlock[] {
+  // article 模式：只在 <article> / <main> 容器内，过祖先黑名单 + Readability allowlist
+  // page 模式：扫整个 body，不过滤 —— 用户明确要"全页翻译"，含 nav/sidebar/footer
+  const root = mode === 'article' ? findArticleRoot() : document.body;
+  const allow = mode === 'article' ? buildReadabilityAllowlist() : null;
   const elements = Array.from(root.querySelectorAll<HTMLElement>(BLOCK_SELECTOR));
   const blocks: ArticleBlock[] = [];
   for (const el of elements) {
     if (el.classList.contains(TRANSLATION_CLASS)) continue;
 
-    // h1 标题特殊处理：Readability 把它单独抽到 article.title，不进 textContent；
-    // 很多站点又把 h1 包在 <article><header><h1></header>，被祖先黑名单连坐。
-    // 所以"在文章正文容器内的 h1"完全豁免所有过滤，标题永远入翻译队列。
     const isArticleHeading =
       el.tagName === 'H1' && el.closest(ARTICLE_ROOT_SELECTOR) !== null;
 
-    if (!isArticleHeading && el.closest(EXCLUDE_ANCESTOR_SELECTOR)) continue;
+    // page 模式跳过祖先黑名单 + Readability 过滤；只保留最基本的过滤
+    if (mode === 'article') {
+      if (!isArticleHeading && el.closest(EXCLUDE_ANCESTOR_SELECTOR)) continue;
+    }
 
     const rawText = (el.textContent ?? '').trim();
     if (rawText.length < MIN_BLOCK_LENGTH) continue;
     if (linkTextRatio(el) > 0.5) continue;
 
-    // Readability sentence allowlist 过滤；h1 标题豁免（标题文本不在 textContent 里）
-    if (!isArticleHeading && allow && !isInReadableArticle(el, allow)) continue;
+    if (mode === 'article' && !isArticleHeading && allow && !isInReadableArticle(el, allow)) {
+      continue;
+    }
 
-    // 走 DOM 抽出"带占位符"的文本：内联 <code>/<kbd>/... 内容替换成 ⟪Cn⟫
     const { text, restoreMap } = extractTextWithPreserves(el);
     if (text.length < MIN_BLOCK_LENGTH) continue;
 
@@ -569,20 +573,24 @@ function getModuleState(): ModuleState {
 /**
  * 外部统一入口：FAB 点击、右键菜单、快捷键都调这个函数。
  * idle ↔ active 切换；active 时点击 = 撤销。
+ *
+ * @param mode 'article' (默认，正文 + Readability 过滤) 或 'page' (整页含 nav/sidebar)
  */
-export function togglePageTranslation(): void {
+export function togglePageTranslation(mode: TranslateMode = 'article'): void {
   if (moduleState.status === 'active') {
     orchestrator.stop();
     undoAllTranslations();
     setModuleState({ status: 'idle', done: 0, total: 0 });
+    notifyExternalListeners('idle');
     return;
   }
-  const blocks = extractArticleBlocks();
+  const blocks = extractArticleBlocks(mode);
   if (blocks.length === 0) {
     console.warn('[english-agent] no translatable blocks found');
     return;
   }
   setModuleState({ status: 'active', done: 0, total: blocks.length });
+  notifyExternalListeners('active');
   orchestrator.start(blocks, {
     onProgress: () => {
       setModuleState({ ...moduleState, done: moduleState.done + 1 });
@@ -590,64 +598,305 @@ export function togglePageTranslation(): void {
   });
 }
 
+/** 状态变化时通知外部（用于 background 更新右键菜单标题） */
+type ExternalListener = (status: FabStatus) => void;
+const externalListeners = new Set<ExternalListener>();
+export function onTranslateStateChange(cb: ExternalListener): () => void {
+  externalListeners.add(cb);
+  return () => externalListeners.delete(cb);
+}
+function notifyExternalListeners(status: FabStatus): void {
+  for (const cb of externalListeners) cb(status);
+}
+
+const FAB_POSITION_KEY = 'english-agent:fab-pos';
+const DRAG_THRESHOLD_PX = 5;
+
+interface FabPosition {
+  /** 距视口右下角的偏移；用 right/bottom 让窗口缩放后仍贴边 */
+  right: number;
+  bottom: number;
+}
+const DEFAULT_FAB_POSITION: FabPosition = { right: 20, bottom: 20 };
+
 export function TranslateFab() {
-  // 订阅模块级状态：外部 toggle 也能联动 FAB UI
   const s = useSyncExternalStore(subscribeModuleState, getModuleState, getModuleState);
+  const [pos, setPos] = useState<FabPosition>(DEFAULT_FAB_POSITION);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const dragRef = useRef<{
+    startX: number;
+    startY: number;
+    startRight: number;
+    startBottom: number;
+    moved: boolean;
+  } | null>(null);
+
+  // 启动时读持久化位置
+  useEffect(() => {
+    chrome.storage.local.get(FAB_POSITION_KEY).then((res) => {
+      const saved = res[FAB_POSITION_KEY] as FabPosition | undefined;
+      if (saved) setPos(saved);
+    });
+  }, []);
+
+  // 全局 mousemove / mouseup：拖拽中
+  useEffect(() => {
+    function onMove(e: MouseEvent) {
+      const drag = dragRef.current;
+      if (!drag) return;
+      const dx = e.clientX - drag.startX;
+      const dy = e.clientY - drag.startY;
+      if (!drag.moved && Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return;
+      drag.moved = true;
+      // 用 right/bottom 反向：鼠标右移 → right 减小
+      setPos({
+        right: Math.max(0, drag.startRight - dx),
+        bottom: Math.max(0, drag.startBottom - dy),
+      });
+    }
+    function onUp() {
+      const drag = dragRef.current;
+      if (!drag) return;
+      dragRef.current = null;
+      if (drag.moved) {
+        // 拖完保存位置
+        setPos((current) => {
+          chrome.storage.local.set({ [FAB_POSITION_KEY]: current }).catch(() => {});
+          return current;
+        });
+      }
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    return () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+  }, []);
+
+  function onMouseDown(e: React.MouseEvent) {
+    // 只响应主键
+    if (e.button !== 0) return;
+    dragRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      startRight: pos.right,
+      startBottom: pos.bottom,
+      moved: false,
+    };
+  }
+
+  function onClick(e: React.MouseEvent) {
+    // 移动超过阈值就当拖拽不当点击
+    const drag = dragRef.current;
+    if (drag?.moved) {
+      e.preventDefault();
+      return;
+    }
+    setMenuOpen(false);
+    togglePageTranslation('article');
+  }
+
+  function onClickMode(mode: TranslateMode) {
+    setMenuOpen(false);
+    if (s.status === 'active') {
+      // active 时点 menu = 撤销当前再开新模式
+      togglePageTranslation();
+      setTimeout(() => togglePageTranslation(mode), 0);
+      return;
+    }
+    togglePageTranslation(mode);
+  }
+
   return (
     <FabButton
       status={s.status}
-      progress={{ done: s.done, total: s.total }}
-      onClick={togglePageTranslation}
+      pos={pos}
+      menuOpen={menuOpen}
+      onMouseDown={onMouseDown}
+      onClick={onClick}
+      onChevronClick={(e) => {
+        e.stopPropagation();
+        setMenuOpen((o) => !o);
+      }}
+      onCloseMenu={() => setMenuOpen(false)}
+      onPickMode={onClickMode}
     />
   );
 }
 
 function FabButton({
   status,
-  progress,
+  pos,
+  menuOpen,
+  onMouseDown,
   onClick,
+  onChevronClick,
+  onCloseMenu,
+  onPickMode,
 }: {
   status: FabStatus;
-  progress: { done: number; total: number };
-  onClick: () => void;
+  pos: FabPosition;
+  menuOpen: boolean;
+  onMouseDown: (e: React.MouseEvent) => void;
+  onClick: (e: React.MouseEvent) => void;
+  onChevronClick: (e: React.MouseEvent) => void;
+  onCloseMenu: () => void;
+  onPickMode: (mode: TranslateMode) => void;
 }) {
-  const label = (() => {
-    if (status === 'idle') return '翻译全文';
-    // active：done 持续涨，total 是抽出的全部 block 数。done<total 说明还有
-    // 没进过视口的块；done===total 说明所有块都翻完了
-    if (progress.total === 0) return '撤销翻译';
-    return progress.done >= progress.total
-      ? '撤销翻译'
-      : `撤销翻译 ${progress.done}/${progress.total}`;
-  })();
-
+  // 不显示进度数字 —— 用户反馈"没必要给用户看到"
+  const label = status === 'active' ? '撤销翻译' : '翻译';
   const Icon = status === 'active' ? X : Languages;
 
   return (
-    <button
-      type="button"
-      onClick={onClick}
+    <div
       style={{
         position: 'fixed',
-        bottom: 20,
-        right: 20,
-        padding: '10px 14px',
-        background: '#111',
-        color: '#fff',
-        fontFamily: 'system-ui, -apple-system, sans-serif',
-        fontSize: 13,
-        fontWeight: 500,
-        borderRadius: 24,
-        border: 'none',
-        cursor: 'pointer',
-        boxShadow: '0 6px 20px rgba(0,0,0,0.35)',
+        bottom: pos.bottom,
+        right: pos.right,
+        zIndex: 2147483647,
         display: 'inline-flex',
         alignItems: 'center',
-        gap: 6,
       }}
     >
-      <Icon size={14} />
-      {label}
-    </button>
+      {/* 下拉菜单 */}
+      {menuOpen && status !== 'active' && (
+        <ModeMenu onCloseMenu={onCloseMenu} onPickMode={onPickMode} />
+      )}
+
+      {/* 主按钮 + chevron 分体显示，但同一外壳 */}
+      <div
+        style={{
+          display: 'inline-flex',
+          alignItems: 'stretch',
+          background: '#111',
+          color: '#fff',
+          fontFamily: 'system-ui, -apple-system, sans-serif',
+          fontSize: 13,
+          fontWeight: 500,
+          borderRadius: 24,
+          boxShadow: '0 6px 20px rgba(0,0,0,0.35)',
+          overflow: 'hidden',
+          userSelect: 'none',
+        }}
+      >
+        <button
+          type="button"
+          onMouseDown={onMouseDown}
+          onClick={onClick}
+          aria-label={label}
+          style={{
+            padding: '10px 14px',
+            background: 'transparent',
+            color: 'inherit',
+            border: 'none',
+            cursor: 'grab',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            font: 'inherit',
+          }}
+        >
+          <Icon size={14} />
+          {label}
+        </button>
+        {status !== 'active' && (
+          <button
+            type="button"
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={onChevronClick}
+            aria-label="切换翻译模式"
+            style={{
+              padding: '10px 10px 10px 4px',
+              background: 'transparent',
+              color: 'inherit',
+              border: 'none',
+              borderLeft: '1px solid rgba(255,255,255,0.15)',
+              cursor: 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+            }}
+          >
+            <ChevronDown size={14} />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ModeMenu({
+  onCloseMenu,
+  onPickMode,
+}: {
+  onCloseMenu: () => void;
+  onPickMode: (mode: TranslateMode) => void;
+}) {
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function onPointerDown(e: PointerEvent) {
+      const path = e.composedPath();
+      if (menuRef.current && path.includes(menuRef.current)) return;
+      onCloseMenu();
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onCloseMenu();
+    }
+    document.addEventListener('pointerdown', onPointerDown, true);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown, true);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [onCloseMenu]);
+
+  const items: Array<{ mode: TranslateMode; label: string; desc: string }> = [
+    { mode: 'article', label: '翻译正文', desc: '只翻文章内容，跳过 nav / 评论 / 边栏' },
+    { mode: 'page', label: '翻译全页', desc: '整页所有段落，含 UI 文案 / 边栏' },
+  ];
+
+  return (
+    <div
+      ref={menuRef}
+      style={{
+        position: 'absolute',
+        bottom: 48,
+        right: 0,
+        minWidth: 200,
+        background: '#fff',
+        color: '#111',
+        fontFamily: 'system-ui, -apple-system, sans-serif',
+        fontSize: 13,
+        border: '1px solid rgba(0,0,0,0.08)',
+        borderRadius: 8,
+        boxShadow: '0 10px 30px rgba(0,0,0,0.18)',
+        overflow: 'hidden',
+      }}
+    >
+      {items.map((item) => (
+        <button
+          key={item.mode}
+          type="button"
+          onClick={() => onPickMode(item.mode)}
+          style={{
+            display: 'block',
+            width: '100%',
+            padding: '8px 12px',
+            background: 'transparent',
+            border: 0,
+            cursor: 'pointer',
+            textAlign: 'left',
+            color: 'inherit',
+            font: 'inherit',
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(0,0,0,0.04)')}
+          onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+        >
+          <div style={{ fontWeight: 500 }}>{item.label}</div>
+          <div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>{item.desc}</div>
+        </button>
+      ))}
+    </div>
   );
 }
