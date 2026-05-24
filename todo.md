@@ -1,104 +1,151 @@
-# Todo —— M2 学习记录（model-ready EncounterEvent）
+# Todo —— M3 全文双语翻译（PRD §7.1 / §9 / §10）
 
-> 配套 PRD §5.2 / §7.3 / §8.3 / §9。M0 + M1 的 todo 保留在 `todo.m0-m1.md` 供回查。
-> 分支：`m2-learning-records`。每完成一项把 `- [ ]` 改成 `- [x]` 并标证据。
-> 阻塞项标 `- [!]` 写明等什么。
-
----
-
-## 决策记录（2026-05-24 已确认）
-
-1. `/api/lookup` 改 POST 带 selectionContext；旧 GET 保留为只读 curl 调试用
-2. chat 类事件只在 `selection.type === 'word'` 时落 `deepchat`；非 word 选区仍然落 chat_messages 但不发 EncounterEvent
-3. 学习记录点条目 = 切回 Chat tab + 重新加载语境卡。**M4 必须支持重放历史对话内容**：因此 `chat_messages` 务必每条都按 `threadId` (= selectionContext.id) + role + content + createdAt 完整存好，schema 已就位无需改
-4. 被动重逢扫描的 lemmatize **放前端做**，浏览器装 wink-lemmatizer（~50KB gzip），节省后端资源 + 避免把全文 POST 上去的隐私顾虑
+> 分支：`m3-bilingual-translation`，从 `m2-learning-records` 起手（继承 M2 schema + Zhipu GLM-4-Flash 译者）。
+> 历史 todo：`todo.m0-m1.md` / `todo.m2.md`。
+> 每完成一项把 `- [ ]` 改成 `- [x]` 并标证据。`[!]` = 等用户/外部确认。
 
 ---
 
 ## Context
 
-M0/M1 已上线（main 分支 commit 链 `da9dc45..e486300`）：选区捕获、pill、sidepanel + assistant-ui Thread、`/api/chat` 流式接 MiniMax、`/api/lookup` 接 GLM 翻译、`/api/tts` 接 MiniMax speech-2.8-hd、`dictionary_entries` / `tts_cache` 缓存。
+M0-M2 已上线：划词链路 + assistant-ui chat + lookup + tts + 学习记录闭环。
+M3 = PRD §13 称为"重心"的全文双语翻译 —— 在 TechCrunch 文章页一键插入
+每段下方的中文译文（PRD §7.1），失败按块独立保留原文 + 重试（PRD §10）。
 
-本期 M2 目标：让"每次查询 / 深聊 / 被动重逢"都成为 `EncounterEvent` 数据流入库，sidepanel 出"学习记录"标签让用户回看；点条目能跳回原对话 / 高亮原文。这是 PRD §12 学习模型（FSRS / HLR）的命脉数据，**晚一天积累就少一天数据**。
-
-`schema.ts` 已有 `selection_contexts` / `encounter_events` / `chat_messages`，本期不动结构，只接通数据通路 + UI 露出。
-
----
-
-## Phase A — 后端 EncounterEvent 接通 ✅
-
-- [x] **A.1** ✓ `lookupWord` 输出 `itemKey: "${lemma}#${pos}"`；新加 `deriveItemKey()` 工具；老缓存条目读取时按 partsOfSpeech 现 derive 兼容
-- [x] **A.2** ✓ `server/src/lib/encounter.ts`：`recordEncounter` + `recordPassiveReencounterDeduped`（后者本期 Phase C 用）；try/catch 吞异常
-- [x] **A.3** ✓ `server/src/lib/selection-context.ts`：`upsertSelectionContext` + 共享 `SelectionContextDTO` 类型；camelCase ↔ snake_case 列映射；ONCONFLICT 幂等
-- [x] **A.4** ✓ `/api/lookup` 加 POST `{ word, selectionContext? }`：upsert → lookup → recordEncounter('lookup')；GET 保留为只读 curl 路径。WordCard 改 POST（有 selectionContext 时）
-- [x] **A.5** ✓ `/api/chat` 入路由 upsertSelectionContext + streamText onFinish 起 `setImmediate` 落 chat_messages 两条（user+assistant，threadId=ctx.id）+ word 选区时 lookupWord + recordEncounter('deepchat')；fire-and-forget 不阻塞 stream
-- [x] **A.6** ✓ `GET /api/history?limit&before`：按 itemKey GROUP BY 聚合 `{ itemKey, lastSurfaceForm, lastTs, lastContextRef, totalCount, eventTypes[] }`；时间游标 nextCursor
-- [x] **A.7** ✓ 双端 `tsc --noEmit` 零错误；E2E smoke test：lookup 写 1 行事件、chat 写 2 chat_messages + 1 deepchat、history 聚合 totalCount=2 / eventTypes=[lookup,deepchat]
+GLM-4-Flash 已经在 M2 接好做翻译，中文母语 + 免费 + 快，复用它做全文翻译
+顺理成章。后端缓存模式跟 dictionary_entries / tts_cache 同构。
 
 ---
 
-## Phase B — Sidepanel 学习记录 UI ✅
+## 决策记录（2026-05-24 已确认）
 
-- [x] **B.1** ✓ `pnpm dlx shadcn@latest add tabs badge` → `components/ui/tabs.tsx` + `badge.tsx`
-- [x] **B.2** ✓ Sidepanel 主区域改 Tabs `Chat | Records`，header + ContextCard + WordCard 仍钉在上方（两 tab 共享）；切到 Records tab 自动 +1 refreshToken 触发列表重拉
-- [x] **B.3** ✓ `components/records-list.tsx`：fetch `/api/history?limit=50`；卡片含 surfaceForm 大字 + (lemma) + pos chip + 次数 badge + 事件类型 chips + 相对时间；loading/empty/error 三态
-- [x] **B.4** ✓ 点条目：fetch `/api/selection-context/[id]` 拿完整 DTO → 切回 Chat tab + setSelection。新增后端路由 `server/src/app/api/selection-context/[id]/route.ts` 做 DB row → DTO 反向映射
-  - **D 完工后**：再补 background 发 `HIGHLIGHT_ANCHOR` 到 content script 让原文滚到 + 闪黄
-
----
-
-## Phase C — 被动重逢扫描 ✅
-
-- [x] **C.0** ✓ Schema 改 `encounter_events.context_ref` 为 nullable（drizzle push --force 应用）+ schema.ts 标注；passive 没具体选区
-- [x] **C.1** ✓ `GET /api/known-items` 返 `{ lemmas: string[] }`，从 itemKey 拆出 lemma 去重；只计 lookup/deepchat/quick 三种主动事件
-- [x] **C.2** ✓ Content script 拉 known-items + chrome.storage.session 缓存 5 分钟
-- [x] **C.3** ✓ `lib/lemmatize.ts` 浏览器版（同 server resolveLemma 算法）+ `lib/wink-lemmatizer.d.ts` 类型；content script `runPassiveScan` 在 load + 1s idle 触发，`Intl.Segmenter` 切词 + lemmatize 匹配；过滤 active 已选 + reportedPassive + scanSeen + len<3 + 含数字
-- [x] **C.4** ✓ Background 收到 `PASSIVE_HITS` 转发到 `POST /api/encounter`；后端 `findCanonicalItemKey` 把 lemma 映射回用户历史 itemKey（保持 lemma#pos 一致），`recordPassiveReencounterDeduped` 同 itemKey/天去重
-
-**实测**：
-  - `POST /api/encounter` 2 hits → written:2,skipped:0；DB 多 out#noun + run#unknown 两行 passive_reencounter；context_ref=NULL
-  - 同 batch 再发 → written:0,skipped:1（dedup 生效）
-
-**已知 trade-off**：
-  - 扩展 bundle 因 wink-lemmatizer 涨到 1.93MB（content script），保留前端 lemmatize 避免向 server 发文本（用户拍板，决策 #4）
+1. **触发**：页面右下角浮动 "Translate" 按钮（与 pill 共存）；再点一下撤销
+2. **批粒度**：5 blocks/批，多批并发
+3. **失败**：按块独立失败 + 单块重试按钮（PRD §10 原样）
+4. **撤销**：DOM remove 已注入的 `.english-agent-translation` 节点
+5. **列表页**：本期不做，只支持文章页
+6. **译文节点**：纯 DOM + 内联样式 + class，**保证用户能选中复制中文做二次划词查询**
+7. **交互进阶（中英切换）**：不做，译文一直显示，撤销才消失
 
 ---
 
-## Phase D — 回原文高亮 ✅
+## Phase A — 后端 `/api/translate`
 
-- [x] **D.1** ✓ Content script `chrome.runtime.onMessage` 收 `HIGHLIGHT_ANCHOR`；`highlightAnchor()` 用 prefix+exact+suffix 前 60 字符做高置信度匹配，退化到 exact 子串；`scrollIntoView({block:'center'})` + `flashHighlight()` 临时换 background-color 1.5s
-- [x] **D.2** ✓ Sidepanel `handleSelectRecord` 在 setSelection 后发 `HIGHLIGHT_REQUEST { url, anchor }` 给 background；background `handleHighlightRequest` 走 `chrome.tabs.query({url})` 找原文 tab → `chrome.tabs.update + windows.update` 切到前台 → `chrome.tabs.sendMessage` 转 HIGHLIGHT_ANCHOR；找不到 tab 抛错不打扰用户
-- [x] **D.3** 可选 fuzzy 回定位 —— 暂时不做，当前 prefix+suffix 前 60 字符匹配对 TechCrunch 文章结构已经足够
+- [ ] **A.1** schema 加 `translations` 表
+  - PK = sha256(model + targetLang + originalText)
+  - 列：hash text PK / original text / zh text / target_lang text / model text / created_at
+  - drizzle push 应用迁移
+  - 验证：`\dt` 看到 translations 表
+
+- [ ] **A.2** `server/src/lib/translate.ts` —— `translateBatch(blocks: string[]): Promise<Array<{ original, zh, source: 'cache'|'llm' }>>`
+  - 输入 N 段文本，先批量查 cache（IN 查询去重命中）
+  - 未命中的发 GLM-4-Flash 一次 LLM 调用翻译（重用 lib/zhipu.ts 的 zhipuFlash）
+  - 翻译结果回填 + 写库
+  - 用 undici fetch 绕开 Next.js fetch patch（M2 Phase CD 学到的坑）
+  - 验证：手测 5 段 mix（有 cache 有 miss）能正确返结果
+
+- [ ] **A.3** `POST /api/translate` 路由
+  - 入参：`{ blocks: [{ id: string; text: string }] }`
+  - 出参：`{ results: [{ id, zh, source, error? }] }` —— PRD §10 按块独立失败
+  - per-block try/catch：单块 LLM 失败不影响其他块；失败行带 `error` 字段
+  - 验证：curl 测 mixed batch；故意发空字符串看是否被过滤；故意发 hash 冲突看是否走 cache
+
+- [ ] **A.4** Smoke test：5 段英文一次 POST 看用时 + 命中率
+
+---
+
+## Phase B — Content Script 抽取 + 浮动按钮 + 双语注入
+
+- [ ] **B.1** 浮动 "翻译全文" 按钮（Shadow DOM，与 pill 共存）
+  - 位置：右下角，垂直距 pill 不冲突
+  - 状态机：idle ⇄ translating ⇄ translated；translated 状态下按钮文案变 "撤销翻译"
+  - 验证：手测三态切换；按钮 click 触发下面 B.2
+
+- [ ] **B.2** 文章正文 block 抽取
+  - 沿用 M0/M1 的 BLOCK_SELECTOR (`p, li, blockquote, h1-h6, dd`)
+  - 限定在 `article` / `main` 容器内（默认适配器）；TechCrunch 有 `<article>` 标签
+  - 给每个 block 加唯一 id（运行时生成 `crypto.randomUUID()`，记 element ↔ id 的 Map）
+  - 过滤：text < 20 字符 跳过（导航/标签噪声）
+  - 验证：在 TechCrunch 文章页 console 跑这个函数，应该返 20-50 个 block
+
+- [ ] **B.3** 触发翻译 —— 发 BATCH_TRANSLATE 给 background
+  - 每批 5 个 block 拆分；多批并发发送
+  - 收到 background 推回的"某块译文 ready" 事件 → 在对应 block 下方插 `<div>` 注入译文
+  - 注入节点：纯 DOM（非 Shadow），淡灰背景 + 左边线，class `english-agent-translation`，便于以后 remove
+  - 行内样式 + class，避免被 TechCrunch 自家 CSS 干掉
+  - 验证：点按钮 → 看到译文逐批冒出
+
+- [ ] **B.4** 按块独立失败
+  - 失败块：下方 inject 一个红色小提示 + "重试" 按钮（只重发这一块）
+  - 验证：故意让某块原文是空字符串（后端会返 error），UI 看到红色提示
+
+- [ ] **B.5** 撤销翻译
+  - 点按钮在 translated 状态 → `document.querySelectorAll('.english-agent-translation').forEach(el => el.remove())`
+  - 按钮文案回 "翻译全文"，DOM 复原
+  - 验证：注入 + 撤销 + 再注入，5 次循环 DOM 干净不残留
+
+---
+
+## Phase C — Background 总线（消息中转 + 缓存）
+
+- [ ] **C.1** Background 收 `TRANSLATE_BLOCKS { blocks: [{id, text}] }`
+  - 转发到 `POST /api/translate`（用 BACKEND env URL）
+  - 收到响应后给 content script 发 `TRANSLATION_RESULTS { results: [{id, zh, error?}] }`
+  - 验证：日志看到 round-trip 时延
+
+- [ ] **C.2** 重试单个 block
+  - 收 `RETRY_BLOCK { id, text }` → 单块走 /api/translate → 单块 TRANSLATION_RESULT 回 content script
+
+- [ ] **C.3** （可选）background 不做缓存层
+  - 缓存在后端 DB 做了，background 只是 message proxy；不在 SW 内存搞二级缓存（SW 会被回收）
+
+---
+
+## Phase D — 收尾打磨
+
+- [ ] **D.1** 顶部进度条 UI（可选）
+  - 翻译中显示一条细窄进度条 1px 高，从 0% 涨到 100%
+  - 或者按钮 spinning 就够了，先 spinning 后续再加进度条
+  - 验证：手测进度可见
+
+- [ ] **D.2** messaging.ts 加新类型
+  - `TRANSLATE_BLOCKS` / `TRANSLATION_RESULTS` / `RETRY_BLOCK` / `TRANSLATION_RESULT`
+  - 共享类型在 `lib/messaging.ts` 同步
+
+- [ ] **D.3** 兼容 M2 高亮路径
+  - 注入译文节点不能干扰 anchor 回原文的 prefix+exact+suffix 匹配
+  - 验证：先翻译全文 → 再切到 Records tab 点条目 → 高亮还要能命中原文 block
 
 ---
 
 ## 验收
 
-`m2-learning-records` 合回 main 前必须满足：
+合回前必须满足：
 
-1. 选个单词查一次 → DB `encounter_events` 有一行 `lookup`
-2. 跟 MiniMax 深聊一轮 → DB 有一行 `deepchat`
-3. Sidepanel `Records` tab 看到刚才那两次记录
-4. 点 Records 列表条目 → 跳回原文 + 高亮（D 完工）
-5. 访问含已查词的 TechCrunch 文章 → DB 多若干 `passive_reencounter`，UI 不变
-6. `pnpm compile` 和 `cd server && pnpm exec tsc --noEmit` 都 0 错误
-7. `pnpm exec wxt build` 干净
+1. TechCrunch 文章页点 "翻译全文" → 5-15s 内全部段落出中文（具体看长度）
+2. 同一文章再点一次 → 大部分块走 cache，<2s 完成（DB `translations` 表多缓存命中行）
+3. 模拟单块失败（手动改空字符串发后端）→ 失败块红色提示 + 重试按钮，**其他块照常显示**（PRD §10）
+4. 撤销翻译 → DOM 完全干净，没有残留 `.english-agent-translation` 节点
+5. 翻译完后从 Records tab 点条目 → 原文高亮仍能命中
+6. `pnpm compile` + `cd server && pnpm exec tsc --noEmit` 全 0 错误
+7. `pnpm exec wxt build` 干净，content script bundle 增量 < 50KB（不引入新大依赖）
 
 ---
 
 ## 不在本期范围
 
-- M3 全文双语翻译 / `/translate` 路由（下一期）
-- M1 收尾：§8.1 完整 popup + 快捷按钮 / 站点适配器框架 / 默认适配器（推迟）
-- FSRS 调度器实际计算 / 复习卡片 / 移动推送（M4+，PRD 明确排除）
-- 测试套件（架构稳定后批量补）
+- 列表页（TechCrunch 首页 / 分类页）—— M4+
+- 流式 SSE 协议 / 单块逐 token 流回 —— 批处理已够（PRD §7.1 流式是 nice-to-have）
+- 自动翻译（PRD §13 "一键" 否定）
+- 多语言（只 en → zh-CN）
+- M1 收尾的站点适配器框架（这里硬编码 article 抽取，下迭代再泛化）
 
 ---
 
-## 风险记录
+## 已知风险
 
-1. **A.5 onFinish vs stream 关闭**：MiniMax `/api/chat` 用 `streamText` + `toUIMessageStreamResponse()`，Next 16 边缘运行时下 `onFinish` 不一定能跑完才 close。落库放 setImmediate / Promise 不 await，绝对不阻塞响应。
-2. **C.3 扫描性能**：长文章逐词 lemmatize 可能阻塞主线程。先 hard cap 处理前 5000 字（约一篇文章），不够再上 web worker。
-3. **C.3 浏览器侧 wink-lemmatizer 体积**：~50KB gzipped，扩展 bundle 影响可接受；如果超预算改用 cheap suffix-strip 算法。
-4. **D.1 exact 匹配命中错误位置**：选区文本可能在文章里重复出现。用 prefix + suffix 的前 6 字符做唯一性 disambiguation。
-5. **/api/encounter POST 暴露给浏览器**：本期单用户开发期无鉴权也 OK；上线前必须加身份层（cookie / JWT）。
+1. **GLM-4-Flash batch JSON 解析**：跟 M2 lookup 翻译同款风险（M2.7-highspeed 一次太多输出会切断，我们用 GLM 不是 thinking 模型应该好得多，但仍按 5/批保护）
+2. **TechCrunch 文章 DOM 异步加载**：广告 / 评论区延迟挂载，可能在抽取后变化；先抽一次，撤销重做之前不重抽
+3. **block 节点引用失效**：作者域 / 评论加载可能 remove 节点，注入时若 block parent 不存在则 skip
+4. **POST /api/translate 体量**：5 block × 平均 100 字符 = 500 字符 / 请求，远低于任何上限
+5. **Zhipu GLM 速率**：免费 tier 不知道并发上限；先 5 批并发，撞限再退到 2 批
