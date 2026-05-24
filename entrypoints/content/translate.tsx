@@ -224,8 +224,7 @@ function injectTranslation(
   const inheritedColor = window.getComputedStyle(anchor).color || 'inherit';
 
   if (result.error) {
-    // 失败：低调灰色行内提示，链接式重试。不用红色避免视觉惊吓。
-    // 中文不适合 italic（看着别扭），保持正体。
+    // 失败：低调灰色行内提示。中文不适合 italic，保持正体。
     node.setAttribute(
       'style',
       [
@@ -237,30 +236,39 @@ function injectTranslation(
         'line-height: 1.5 !important',
       ].join(';'),
     );
-    const msg = document.createElement('span');
-    msg.textContent = '翻译未能完成 · ';
-    node.appendChild(msg);
 
-    const link = document.createElement('button');
-    link.type = 'button';
-    link.textContent = '重试';
-    link.setAttribute(
-      'style',
-      [
-        'background: transparent',
-        'border: 0',
-        'padding: 0',
-        'color: inherit',
-        'cursor: pointer',
-        'font: inherit',
-        'text-decoration: underline',
-        'text-underline-offset: 2px',
-      ].join(';'),
-    );
-    link.addEventListener('mouseenter', () => (link.style.opacity = '1'));
-    link.addEventListener('mouseleave', () => (link.style.opacity = ''));
-    link.addEventListener('click', onRetry);
-    node.appendChild(link);
+    // content_filtered: 内容审查命中（智谱安全过滤等），重试也是死路 → 不挂重试按钮
+    if (result.error === 'content_filtered') {
+      const msg = document.createElement('span');
+      msg.textContent = '⛔ 内容审查拦截，该段无法翻译';
+      node.appendChild(msg);
+    } else {
+      // 其他可重试错误：网络 / token 截断 / GLM 临时抖动
+      const msg = document.createElement('span');
+      msg.textContent = '翻译未能完成 · ';
+      node.appendChild(msg);
+
+      const link = document.createElement('button');
+      link.type = 'button';
+      link.textContent = '重试';
+      link.setAttribute(
+        'style',
+        [
+          'background: transparent',
+          'border: 0',
+          'padding: 0',
+          'color: inherit',
+          'cursor: pointer',
+          'font: inherit',
+          'text-decoration: underline',
+          'text-underline-offset: 2px',
+        ].join(';'),
+      );
+      link.addEventListener('mouseenter', () => (link.style.opacity = '1'));
+      link.addEventListener('mouseleave', () => (link.style.opacity = ''));
+      link.addEventListener('click', onRetry);
+      node.appendChild(link);
+    }
   } else {
     // 正常译文：继承原段落的实际颜色 + opacity 整体淡化区分
     node.setAttribute(

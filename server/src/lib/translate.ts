@@ -73,9 +73,9 @@ async function callLLMBatch(
   const result = await generateText({
     model,
     prompt,
-    // GLM-4-Flash 非推理模型；5 段长 paragraph (~300 字符 / 段) 中文输出可达
-    // ~2500 tokens。给到 4000 留余量避免截断 JSON。
-    maxOutputTokens: 4000,
+    // GLM-4-Flash 偶发会在 finish=stop 时漏掉 JSON 闭合 ] 或元素间逗号。
+    // 给到 6000 缓解截断；与速度无关（GLM 非推理）。
+    maxOutputTokens: 6000,
   });
   const text = result.text;
   const start = text.indexOf('[');
@@ -103,45 +103,58 @@ async function callLLMBatch(
   }
 }
 
+type ErrorKind = 'content_filtered' | 'translation_failed';
+
+/** 单段翻译结果：成功是字符串；失败是带错误类型的对象 */
+type SingleResult = string | { error: ErrorKind };
+
+/** 把原始 LLM 错误 message 分类成"用户能看懂"的几种 */
+function classifyError(message: string | undefined): ErrorKind {
+  if (!message) return 'translation_failed';
+  // 智谱（以及大多数中国 LLM）内容审查的典型文案
+  if (/敏感|不安全|sensitive|content.*filter|safety/i.test(message)) {
+    return 'content_filtered';
+  }
+  return 'translation_failed';
+}
+
 /**
  * Divide-and-conquer 兜底：
- *   - 一把跑整批，成功就返结果
- *   - 失败时拆成左右两半递归；单段还失败 → 该段位置返空串（让外层标 error）
- * 这样个别段 token 截断 / 单段 GLM 配额抖动不再殃及全批。
+ *   - 整批跑一次，成功就返结果
+ *   - 失败时拆成左右两半递归，把 per-段 error 信息一路透传
+ *   - 单段还失败 → 返 { error } 让前端区分内容审查 vs 其他错误
+ *     （前者重试也没用，UI 不挂重试按钮）
  *
- * 返回值跟 texts 等长；对应位置为 '' 表示翻译失败。
+ * 返回值跟 texts 等长。
  */
 async function translateWithFallback(
   texts: string[],
   model: LanguageModel,
-): Promise<string[] | null> {
+): Promise<SingleResult[]> {
   if (texts.length === 0) return [];
 
   // 整批先试一把
+  let lastErrorMsg: string | undefined;
   try {
     const arr = await callLLMBatch(texts, model, MODEL_LABEL_ZHIPU);
     if (arr) return arr;
   } catch (err) {
-    console.warn(`[translate] batch(${texts.length}) threw:`, err instanceof Error ? err.message : err);
+    lastErrorMsg = err instanceof Error ? err.message : String(err);
+    console.warn(`[translate] batch(${texts.length}) threw:`, lastErrorMsg);
   }
 
-  // 整批失败：单段直接返 null 让外层标 error
-  if (texts.length === 1) return null;
+  // 单段还失败 → 透传分类后的 error
+  if (texts.length === 1) {
+    return [{ error: classifyError(lastErrorMsg) }];
+  }
 
-  // 拆半递归
+  // 拆半递归 + 合并
   const mid = Math.floor(texts.length / 2);
   const [left, right] = await Promise.all([
     translateWithFallback(texts.slice(0, mid), model),
     translateWithFallback(texts.slice(mid), model),
   ]);
-  // 合并：对应位置缺失（null）的用空串占位，由外层标 error
-  const merged: string[] = [];
-  for (let i = 0; i < texts.length; i++) {
-    const arr = i < mid ? left : right;
-    const idx = i < mid ? i : i - mid;
-    merged.push(arr?.[idx] ?? '');
-  }
-  return merged;
+  return [...left, ...right];
 }
 
 /**
@@ -204,41 +217,32 @@ export async function translateBatch(texts: string[]): Promise<TranslateResult[]
     }
     return results;
   }
-  // 翻译入口：先按整批跑；失败则 divide-and-conquer 拆半递归，
-  // 单段还失败才真返 error。这样 1/5 段 token 截断 / RPM 撞墙不再殃及整批。
+  // 翻译入口：整批跑 → 失败则 divide-and-conquer 拆半递归 → 单段失败带 error
+  // 类型透传，让前端区分 content_filtered（内容审查，重试无效）vs
+  // translation_failed（其他临时错误，可重试）
   const translated = await translateWithFallback(miss.map((m) => m.text), zhipuFlash);
-  if (!translated) {
-    for (const m of miss) {
-      results[m.index] = {
-        original: m.text,
-        zh: '',
-        source: 'llm',
-        error: 'translation_failed',
-      };
-    }
-    return results;
-  }
 
-  // 3) 回填 + 入缓存。divide-and-conquer 返空串表示该段单独失败；
-  //    标 error 让前端挂"重试"，并且空译文绝不入缓存。
+  // 3) 回填 + 入缓存。translateWithFallback 返 SingleResult：
+  //    string = 翻译成功；{ error } = 该段失败（content_filtered / translation_failed）。
+  //    失败段绝不入缓存。
   const inserts: Array<typeof translations.$inferInsert> = [];
   for (let i = 0; i < miss.length; i++) {
     const m = miss[i];
-    const zh = translated[i];
-    if (!zh) {
+    const r = translated[i];
+    if (typeof r !== 'string') {
       results[m.index] = {
         original: m.text,
         zh: '',
         source: 'llm',
-        error: 'translation_failed',
+        error: r.error,
       };
       continue;
     }
-    results[m.index] = { original: m.text, zh, source: 'llm' };
+    results[m.index] = { original: m.text, zh: r, source: 'llm' };
     inserts.push({
       hash: m.hash,
       originalText: m.text,
-      zh,
+      zh: r,
       targetLang: TARGET_LANG,
       model: MODEL_LABEL_ZHIPU,
     });
