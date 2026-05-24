@@ -19,6 +19,8 @@ import { Readability, isProbablyReaderable } from '@mozilla/readability';
 import type { BackgroundMessage, TranslationResult } from '@/lib/messaging';
 
 const BLOCK_SELECTOR = 'p, li, blockquote, h2, h3, h4, h5, h6, dd';
+/** 内联标签：内容当作"代码 / 标识符"占位符发给 LLM，翻译完原样恢复 */
+const INLINE_PRESERVE_SELECTOR = 'code, kbd, samp, var, tt';
 const ROOT_SELECTOR_CANDIDATES = ['article', 'main', '[role="main"]'];
 /** 在这些祖先内的块直接跳过 —— 导航 / 边栏 / 页脚 / 相关阅读等噪声 */
 const EXCLUDE_ANCESTOR_SELECTOR = [
@@ -107,7 +109,60 @@ function linkTextRatio(block: HTMLElement): number {
 interface ArticleBlock {
   id: string;
   element: HTMLElement;
+  /** 已注入占位符的待翻译文本（代码标识符被替换成 ⟪C1⟫ ⟪C2⟫ 等） */
   text: string;
+  /** 占位符 → 原代码文本 的映射，翻译完原样替换回去 */
+  restoreMap: Map<string, string>;
+}
+
+/**
+ * 递归 walk block 的 DOM，把内联 code / kbd / samp / var 元素换成占位符。
+ * 这样命令名 / 库名 / API 名（"Write" / "Edit" / "claude" / "caw"）不会被
+ * LLM 当英文常用词翻成中文动词，翻译完前端再把占位符替换回原文本。
+ *
+ * 占位符用罕见的 Unicode 角括号 ⟪C1⟫ 确保 LLM 不去翻译它。
+ */
+function buildTextWithPreserves(
+  node: Node,
+  restoreMap: Map<string, string>,
+  counter: { n: number },
+): string {
+  if (node.nodeType === Node.TEXT_NODE) {
+    return node.textContent ?? '';
+  }
+  if (node.nodeType !== Node.ELEMENT_NODE) return '';
+  const el = node as Element;
+  if (el.matches(INLINE_PRESERVE_SELECTOR)) {
+    counter.n += 1;
+    const placeholder = `⟪C${counter.n}⟫`;
+    restoreMap.set(placeholder, el.textContent ?? '');
+    return placeholder;
+  }
+  // 其它（含 a / strong / em / span 等）只递归子节点，不替换
+  let out = '';
+  for (const child of Array.from(el.childNodes)) {
+    out += buildTextWithPreserves(child, restoreMap, counter);
+  }
+  return out;
+}
+
+function extractTextWithPreserves(block: HTMLElement): {
+  text: string;
+  restoreMap: Map<string, string>;
+} {
+  const restoreMap = new Map<string, string>();
+  const counter = { n: 0 };
+  const text = buildTextWithPreserves(block, restoreMap, counter).trim();
+  return { text, restoreMap };
+}
+
+/** 翻译完成后把占位符 ⟪C1⟫ 替换回原代码文本 */
+function restorePreserves(translated: string, restoreMap: Map<string, string>): string {
+  let out = translated;
+  for (const [ph, orig] of restoreMap.entries()) {
+    out = out.split(ph).join(orig);
+  }
+  return out;
 }
 
 function extractArticleBlocks(): ArticleBlock[] {
@@ -119,16 +174,20 @@ function extractArticleBlocks(): ArticleBlock[] {
     if (el.classList.contains(TRANSLATION_CLASS)) continue;
     if (el.closest(EXCLUDE_ANCESTOR_SELECTOR)) continue;
 
-    const text = (el.textContent ?? '').trim();
-    if (text.length < MIN_BLOCK_LENGTH) continue;
+    const rawText = (el.textContent ?? '').trim();
+    if (rawText.length < MIN_BLOCK_LENGTH) continue;
     if (linkTextRatio(el) > 0.5) continue; // link-heavy = 导航类，跳过
 
-    // Readability 进一步过滤（如果跑成功）
+    // Readability 进一步过滤（如果跑成功）—— 用未占位的原文匹配
     if (allow && !isInReadableArticle(el, allow)) continue;
+
+    // 走 DOM 抽出"带占位符"的文本：内联 <code>/<kbd>/... 内容替换成 ⟪Cn⟫
+    const { text, restoreMap } = extractTextWithPreserves(el);
+    if (text.length < MIN_BLOCK_LENGTH) continue;
 
     const id = el.getAttribute(BLOCK_ID_ATTR) ?? crypto.randomUUID();
     el.setAttribute(BLOCK_ID_ATTR, id);
-    blocks.push({ id, element: el, text });
+    blocks.push({ id, element: el, text, restoreMap });
   }
   return blocks;
 }
@@ -263,18 +322,25 @@ export function TranslateFab({ onStatusChange }: FabProps) {
     onStatusChange?.(next);
   }
 
-  async function retryBlock(blockId: string, element: HTMLElement, text: string) {
+  async function retryBlock(
+    blockId: string,
+    element: HTMLElement,
+    text: string,
+    restoreMap: Map<string, string>,
+  ) {
     try {
       const results = await translateBatchViaBackground([{ id: blockId, text }]);
       const r = results[0];
       if (!r) return;
-      injectTranslation(element, r, () => retryBlock(blockId, element, text));
+      // 把 ⟪Cn⟫ 占位符换回原代码文本
+      const restored: TranslationResult = r.zh ? { ...r, zh: restorePreserves(r.zh, restoreMap) } : r;
+      injectTranslation(element, restored, () => retryBlock(blockId, element, text, restoreMap));
     } catch (err) {
       console.warn('[english-agent] retry block failed', err);
       injectTranslation(
         element,
         { id: blockId, zh: '', source: 'llm', error: String(err) },
-        () => retryBlock(blockId, element, text),
+        () => retryBlock(blockId, element, text, restoreMap),
       );
     }
   }
@@ -298,6 +364,7 @@ export function TranslateFab({ onStatusChange }: FabProps) {
 
     const elementById = new Map(blocks.map((b) => [b.id, b.element]));
     const textById = new Map(blocks.map((b) => [b.id, b.text]));
+    const restoreMapById = new Map(blocks.map((b) => [b.id, b.restoreMap]));
 
     const batches = chunk(
       blocks.map((b) => ({ id: b.id, text: b.text })),
@@ -315,10 +382,11 @@ export function TranslateFab({ onStatusChange }: FabProps) {
           for (const b of batch) {
             const el = elementById.get(b.id);
             if (el) {
+              const rm = restoreMapById.get(b.id) ?? new Map();
               injectTranslation(
                 el,
                 { id: b.id, zh: '', source: 'llm', error: String(err) },
-                () => retryBlock(b.id, el, b.text),
+                () => retryBlock(b.id, el, b.text, rm),
               );
             }
             setProgress((p) => ({ ...p, done: p.done + 1 }));
@@ -330,7 +398,11 @@ export function TranslateFab({ onStatusChange }: FabProps) {
           const el = elementById.get(r.id);
           if (!el) continue;
           if (r.error) anyError = true;
-          injectTranslation(el, r, () => retryBlock(r.id, el, textById.get(r.id) ?? ''));
+          const rm = restoreMapById.get(r.id) ?? new Map();
+          const restored: TranslationResult = r.zh ? { ...r, zh: restorePreserves(r.zh, rm) } : r;
+          injectTranslation(el, restored, () =>
+            retryBlock(r.id, el, textById.get(r.id) ?? '', rm),
+          );
           setProgress((p) => ({ ...p, done: p.done + 1 }));
         }
       }),

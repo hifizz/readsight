@@ -62,6 +62,7 @@ async function callLLMBatch(
     '- Each output gloss should read like native Chinese writing, not literal word-for-word.',
     '- Keep paragraph length proportionate to the original.',
     '- Do NOT add commentary, prefixes, or numbering.',
+    '- CRITICAL: Preserve any token matching the pattern ⟪C followed by digits then ⟫ (e.g. ⟪C1⟫, ⟪C2⟫) EXACTLY as-is. These are placeholders for code identifiers — never translate or modify them. Keep them in the natural position they would occupy in the Chinese sentence.',
     '',
     `Input (JSON array of ${texts.length} English paragraphs):`,
     JSON.stringify(texts),
