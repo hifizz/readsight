@@ -135,6 +135,25 @@ export const dictionaryEntries = pgTable('dictionary_entries', {
 export type DictionaryEntryRow = typeof dictionaryEntries.$inferSelect;
 export type NewDictionaryEntryRow = typeof dictionaryEntries.$inferInsert;
 
+/**
+ * TTS 缓存（PRD §6.3 Tier 2 句子精听 / 控成本）。
+ *
+ * - PK = sha256(text + voice + model)，文本可能很长不适合做 PK
+ * - audioHex: MiniMax T2A v2 默认就返 hex 编码 MP3，直接落库省一次编解码
+ * - 同一句话用户多次点 Speak（重听）→ 第二次命中缓存，0 token、瞬回
+ */
+export const ttsCache = pgTable('tts_cache', {
+  hash: text('hash').primaryKey(),
+  text: text('text').notNull(),
+  voice: text('voice').notNull(),
+  model: text('model').notNull(),
+  audioHex: text('audio_hex').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type TtsCacheRow = typeof ttsCache.$inferSelect;
+export type NewTtsCacheRow = typeof ttsCache.$inferInsert;
+
 export type SelectionContextRow = typeof selectionContexts.$inferSelect;
 export type NewSelectionContextRow = typeof selectionContexts.$inferInsert;
 export type EncounterEventRow = typeof encounterEvents.$inferSelect;

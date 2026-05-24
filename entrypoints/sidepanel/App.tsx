@@ -25,6 +25,7 @@ import type { BackgroundMessage, SelectionContext } from '@/lib/messaging';
 import { Thread } from '@/components/assistant-ui/thread';
 import { ThreadList } from '@/components/assistant-ui/thread-list';
 import { WordCard } from '@/components/word-card';
+import { SpeakButton } from '@/components/speak-button';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -167,6 +168,9 @@ function ContextCard({
   ctx: SelectionContext;
   onClear: () => void;
 }) {
+  // 单词类型不在 ContextCard 上挂 Speak —— WordCard 自己的 ▶ 按钮放词典真人音频，
+  // 比 TTS 更准。其他类型（phrase / sentence / multi）才用 MiniMax T2A v2。
+  const showSpeak = ctx.selection.type !== 'word';
   return (
     <div className="border-b bg-muted/30 px-3 py-2 text-xs">
       <div className="flex items-start gap-2">
@@ -184,15 +188,20 @@ function ContextCard({
             {ctx.context.sentence}
           </div>
         </div>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="size-6 shrink-0"
-          onClick={onClear}
-          aria-label="Clear selection context"
-        >
-          <X className="size-3.5" />
-        </Button>
+        <div className="flex shrink-0 items-center gap-0.5">
+          {showSpeak && (
+            <SpeakButton text={ctx.selection.text} backendUrl={BACKEND} />
+          )}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-6"
+            onClick={onClear}
+            aria-label="Clear selection context"
+          >
+            <X className="size-3.5" />
+          </Button>
+        </div>
       </div>
     </div>
   );
