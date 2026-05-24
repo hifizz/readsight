@@ -26,7 +26,8 @@ export interface LookupResult {
   audioUrl?: string;
   partsOfSpeech: Array<{
     pos: string;
-    definitions: Array<{ definition: string; example?: string }>;
+    // cn: 中文释义；D 方案下 Free Dictionary 命中后由 MiniMax 批量翻译填入并一起入缓存。
+    definitions: Array<{ definition: string; cn?: string; example?: string }>;
   }>;
   source: 'cache' | 'free-dictionary' | 'llm';
   estimated?: boolean;
@@ -137,20 +138,104 @@ async function fetchFreeDictionary(lemmaWord: string): Promise<LookupResult | nu
   };
 }
 
+// --- 中文释义批量翻译（D 方案核心）-----------------------------------------
+
+/**
+ * 把 Free Dictionary 返回的英文定义翻成中文短释义。
+ *
+ * 关键设计：
+ *   - 按词性并行调用，每次只翻一个 POS 的 1-3 条定义。理由：MiniMax-M2.1 是
+ *     thinking 模型，单次响应大头是推理 token（翻 2 条 ≈ 700 token，翻 8 条
+ *     可超 4000）。分小批降低推理量，单次都能在合理预算下返完整 JSON。
+ *   - 并行 Promise.all：3-4 个 POS 同时翻，墙钟时间 ≈ 单批耗时
+ *   - 翻译跟英文释义一起入 dictionary_entries 缓存 —— 一次翻译永久可用
+ *   - 单个 POS 失败 = 该词性 cn 缺失，其他词性正常显示
+ */
+async function translateOnePos(
+  word: string,
+  pos: string,
+  defs: string[],
+): Promise<string[] | null> {
+  if (defs.length === 0) return [];
+  const prompt = [
+    `You translate English dictionary definitions into short, idiomatic Chinese glosses suitable for a dictionary lookup card. The headword being defined is "${word}" (used as ${pos}).`,
+    '',
+    'Rules:',
+    '- Each gloss ≤ 20 Chinese characters when possible, ≤ 30 max.',
+    '- Be concise like a real dictionary (e.g. "驱逐；赶出"), not literal.',
+    '- Do NOT include the English word itself in the Chinese gloss.',
+    '- Do NOT add prefixes like "释义：" or numbering.',
+    '- Multiple closely-related meanings in one definition: separate with 「；」.',
+    '',
+    `Input (JSON array of ${defs.length} English definitions):`,
+    JSON.stringify(defs),
+    '',
+    `Output: ONLY a JSON array of exactly ${defs.length} Chinese strings. No prose, no code fences.`,
+  ].join('\n');
+
+  try {
+    const result = await generateText({
+      model: minimax(DEFAULT_MODEL_ID),
+      prompt,
+      maxOutputTokens: 2500,
+    });
+    const text = result.text;
+    const start = text.indexOf('[');
+    const end = text.lastIndexOf(']');
+    if (start < 0 || end <= start) {
+      console.warn(`[lookup] zh ${pos}: no JSON array, finish=${result.finishReason}, raw=${text.slice(0, 200)}`);
+      return null;
+    }
+    const arr = JSON.parse(text.slice(start, end + 1)) as unknown;
+    if (!Array.isArray(arr) || arr.length !== defs.length || !arr.every((s) => typeof s === 'string')) {
+      console.warn(`[lookup] zh ${pos}: shape mismatch, got=${Array.isArray(arr) ? arr.length : 'non-array'}, expected=${defs.length}`);
+      return null;
+    }
+    return arr as string[];
+  } catch (err) {
+    console.warn(`[lookup] zh ${pos}: threw`, err);
+    return null;
+  }
+}
+
+async function translateDefinitionsToZh(
+  word: string,
+  partsOfSpeech: LookupResult['partsOfSpeech'],
+): Promise<LookupResult['partsOfSpeech']> {
+  // 并行翻译每个 POS。
+  const perPosResults = await Promise.all(
+    partsOfSpeech.map((p) => translateOnePos(word, p.pos, p.definitions.map((d) => d.definition))),
+  );
+
+  return partsOfSpeech.map((p, pi) => {
+    const cn = perPosResults[pi];
+    return {
+      ...p,
+      definitions: p.definitions.map((d, di) => ({
+        ...d,
+        cn: cn?.[di] ?? undefined,
+      })),
+    };
+  });
+}
+
 // --- LLM fallback ----------------------------------------------------------
 
 /**
  * 词典完全没命中（多见于品牌名、新造词、领域缩写）时让 MiniMax 估一份。
  * 标 estimated:true 让 UI 在 WordCard 上加 "guess" 角标，对应 PRD §6.2 原则。
+ *
+ * 既然已经在调 LLM，顺手让它把 cn 字段一起填进去，省一次翻译往返。
  */
 async function llmLookup(lemmaWord: string): Promise<LookupResult> {
   const prompt = [
-    `You are a lexicographer. Generate a brief dictionary entry for the English token "${lemmaWord}".`,
+    `You are a lexicographer. Generate a brief bilingual dictionary entry for the English token "${lemmaWord}".`,
     'Respond with ONLY a JSON object — no prose, no markdown, no code fences.',
     'Schema:',
-    '{ "ipa": "/.../", "partsOfSpeech": [{ "pos": "noun|verb|...", "definitions": [{ "definition": "...", "example": "..." }] }] }',
+    '{ "ipa": "/.../", "partsOfSpeech": [{ "pos": "noun|verb|...", "definitions": [{ "definition": "english def", "cn": "中文释义 ≤20字", "example": "..." }] }] }',
     'Rules:',
     '- Max 2 parts of speech, max 2 definitions each.',
+    '- cn must be a short Chinese gloss like a real dictionary (e.g. "驱逐；赶出"), ≤20 chars when possible.',
     '- If the token looks like a brand / proper noun / acronym, still produce a plausible entry; "pos" can be "proper noun" or "abbreviation".',
     '- If you genuinely cannot tell, return: { "ipa": "", "partsOfSpeech": [] }',
   ].join('\n');
@@ -158,7 +243,7 @@ async function llmLookup(lemmaWord: string): Promise<LookupResult> {
   const { text } = await generateText({
     model: minimax(DEFAULT_MODEL_ID),
     prompt,
-    maxOutputTokens: 500,
+    maxOutputTokens: 600,
   });
 
   let parsed: { ipa?: string; partsOfSpeech?: LookupResult['partsOfSpeech'] };
@@ -213,10 +298,17 @@ export async function lookupWord(input: string): Promise<LookupResult> {
     };
   }
 
-  // 2) Free Dictionary
+  // 2) Free Dictionary（D 方案：命中后让 MiniMax 把英文 definition 批量翻译成中文短义，
+  //    一并写进缓存。翻译失败不影响主流程，cn 字段缺失即可。）
   const dict = await fetchFreeDictionary(lemmaWord);
   if (dict && dict.partsOfSpeech.length > 0) {
-    const result: LookupResult = { ...dict, surfaceForm, lemma: lemmaWord };
+    const bilingualPos = await translateDefinitionsToZh(lemmaWord, dict.partsOfSpeech);
+    const result: LookupResult = {
+      ...dict,
+      partsOfSpeech: bilingualPos,
+      surfaceForm,
+      lemma: lemmaWord,
+    };
     await db
       .insert(dictionaryEntries)
       .values({ lemma: lemmaWord, payload: result, source: 'free-dictionary' })

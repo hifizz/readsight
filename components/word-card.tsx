@@ -127,10 +127,14 @@ export function WordCard({ surfaceForm, backendUrl }: WordCardProps) {
             <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
               {p.pos}
             </div>
-            <ol className="ml-3 list-decimal space-y-0.5 text-foreground">
+            <ol className="ml-3 list-decimal space-y-1 text-foreground">
               {p.definitions.map((d, j) => (
-                <li key={j}>
-                  <span>{d.definition}</span>
+                <li key={j} className="leading-snug">
+                  <div>{d.definition}</div>
+                  {d.cn && (
+                    // 中文释义：稍微淡一点的前景色 + 大半字号，让英文是主体、中文是辅助
+                    <div className="text-foreground/75">{d.cn}</div>
+                  )}
                   {d.example && (
                     <div className="text-muted-foreground italic">
                       — {d.example}
