@@ -230,20 +230,26 @@ export async function translateBatch(texts: string[]): Promise<TranslateResult[]
     typeof r === 'string' ? MODEL_LABEL_ZHIPU : '',
   );
 
-  // 拣出被审查拦截的位置，丢给 OpenRouter 重翻
+  // 所有 Zhipu 失败位置（content_filtered / translation_failed / 网络 /
+  // RPM rate-limit 级联）全丢给 OpenRouter 重翻。
+  //
+  // 之前只盖 content_filtered，但实测 GLM 免费 tier 在并发 batch 下经常
+  // RPM 撞墙，错误信息里没"敏感"关键字 → classifyError 归 translation_failed
+  // → 不走 OpenRouter → 用户看到 5 条连续失败但手动重试又能过（间隔够大）。
+  // 扩大兜底范围彻底解决这类级联失败。
   if (isOpenrouterConfigured() && openrouterModel) {
-    const filteredIndices: number[] = [];
+    const failedIndices: number[] = [];
     translated.forEach((r, i) => {
-      if (typeof r !== 'string' && r.error === 'content_filtered') filteredIndices.push(i);
+      if (typeof r !== 'string') failedIndices.push(i);
     });
-    if (filteredIndices.length > 0) {
+    if (failedIndices.length > 0) {
       console.log(
-        `[translate] ${filteredIndices.length} segments hit content_filter, retrying via OpenRouter (${OPENROUTER_MODEL_ID})`,
+        `[translate] ${failedIndices.length} segments failed on Zhipu, retrying via OpenRouter (${OPENROUTER_MODEL_ID})`,
       );
-      const filteredTexts = filteredIndices.map((i) => miss[i].text);
-      const orResults = await translateWithFallback(filteredTexts, openrouterModel);
-      for (let k = 0; k < filteredIndices.length; k++) {
-        const idx = filteredIndices[k];
+      const failedTexts = failedIndices.map((i) => miss[i].text);
+      const orResults = await translateWithFallback(failedTexts, openrouterModel);
+      for (let k = 0; k < failedIndices.length; k++) {
+        const idx = failedIndices[k];
         translated[idx] = orResults[k];
         if (typeof orResults[k] === 'string') {
           modelByIndex[idx] = OPENROUTER_MODEL_ID;
