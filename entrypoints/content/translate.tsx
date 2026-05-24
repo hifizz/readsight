@@ -199,12 +199,40 @@ const PAGE_BLOCK_TAGS = new Set([
   'HEADER', 'FOOTER', 'NAV', 'MAIN',
 ]);
 
-function extractArticleBlocks(mode: TranslateMode = 'article'): ArticleBlock[] {
+/**
+ * 翻译激活期间缓存的 article root + Readability allowlist。
+ *
+ * 为什么要缓存：
+ *   1. Readability 是启发式，每次 parse 同一文档可能给出不同 allowlist。
+ *      lazy-load 新段落到来时如果 rescan 重跑，新段落经常进不了"主文章"
+ *      的判定 —— 表现就是"继续加载的内容不被翻译"。
+ *   2. findArticleRoot 也可能因 DOM 变化指向不同元素，root 漂移会让
+ *      rescan 扫错范围。
+ * 缓存让初始 scan 一锤定音，后续 rescan 永远围着同一个 root 工作。
+ */
+let cachedArticleRoot: HTMLElement | null = null;
+let cachedReadabilityAllow: Set<string> | null = null;
+
+/**
+ * @param isRescan true = MutationObserver 触发的增量扫，宽松路径（不再
+ *   用 Readability 过滤新块，只要在 cachedArticleRoot 内 + 不在 EXCLUDE_ANCESTOR
+ *   就算 article body）；false = 用户点击触发的初始扫，严格路径。
+ */
+function extractArticleBlocks(
+  mode: TranslateMode = 'article',
+  isRescan = false,
+): ArticleBlock[] {
   if (mode === 'page') return extractPageBlocks();
 
-  // article 模式（保持原逻辑）：只在 <article>/<main> 内 + Readability 过滤
-  const root = findArticleRoot();
-  const allow = buildReadabilityAllowlist();
+  // 初始扫：算 root + Readability allowlist，缓存供 rescan 复用 / 续翻判定
+  if (!isRescan) {
+    cachedArticleRoot = findArticleRoot();
+    cachedReadabilityAllow = buildReadabilityAllowlist();
+  }
+  const root = cachedArticleRoot ?? findArticleRoot();
+  // Rescan 不再用 Readability 过滤 —— 新内容默认算正文（信任初始 root 判定）
+  const allow = isRescan ? null : cachedReadabilityAllow;
+
   const elements = Array.from(root.querySelectorAll<HTMLElement>(BLOCK_SELECTOR));
   const blocks: ArticleBlock[] = [];
   for (const el of elements) {
@@ -684,6 +712,9 @@ export function togglePageTranslation(mode: TranslateMode = 'article'): void {
     undoAllTranslations();
     setModuleState({ status: 'idle', done: 0, total: 0 });
     notifyExternalListeners('idle');
+    // 清掉 article 模式的 root / allowlist 缓存
+    cachedArticleRoot = null;
+    cachedReadabilityAllow = null;
     return;
   }
   const blocks = extractArticleBlocks(mode);
@@ -741,9 +772,10 @@ function stopMutationWatch(): void {
 function rescanForNewBlocks(mode: TranslateMode): void {
   mutationDebounceTimer = null;
   if (!orchestrator.isActive) return;
-  // 全量重扫；老块按 BLOCK_ID_ATTR 在 orchestrator 内部去重，新块入队。
-  // O(N) DOM walk，N 即 BLOCK_SELECTOR / page tags 命中数，毫秒级。
-  const all = extractArticleBlocks(mode);
+  // isRescan=true：article 模式走宽松路径（用缓存 root、跳过 Readability
+  // 重判定），新内容只要落在 cachedArticleRoot 内就被收。否则 lazy-load
+  // 的段落经常通不过 Readability 的飘忽启发式，无法续翻。
+  const all = extractArticleBlocks(mode, true);
   const added = orchestrator.addBlocks(all);
   if (added > 0) {
     setModuleState({ ...moduleState, total: orchestrator.totalCount });
