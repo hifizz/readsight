@@ -72,26 +72,6 @@ M0/M1 已上线（main 分支 commit 链 `da9dc45..e486300`）：选区捕获、
 
 ---
 
-## Phase D — 回原文高亮
-
-- [ ] **D.1** Content script `HIGHLIGHT_ANCHOR` message handler
-  - 接收 `{ exact, prefix, suffix }` —— PRD §5.1 TextQuoteSelector 形态
-  - 当前 DOM 内 exact substring 匹配（先简单 exact，未来再 fuzzy）
-  - 找到后 `scrollIntoView({ behavior: 'smooth', block: 'center' })` + 临时包 `<span style="background:yellow">` 2s 后淡出移除
-  - 验证：DevTools console 手动 `chrome.runtime.sendMessage({type:'HIGHLIGHT_ANCHOR', payload:{exact:'...',prefix:'',suffix:''}})` 能命中
-
-- [ ] **D.2** Background 中继消息到正确 tabId
-  - sidepanel 发 `HIGHLIGHT_REQUEST { selectionContextId }` 到 background
-  - background 查 storage / DB 拿 anchor，找到 SelectionContext.source.url 对应的 tab，sendMessage 给那个 tab 的 content script
-  - 验证：sidepanel 点 records 项 → 原文 tab 滚到 + 闪黄
-  - 边角：原文 tab 已关 → 弹 toast 提示"原文已关闭"
-
-- [ ] **D.3** （可选）fuzzy 回定位
-  - exact 匹配失败时用 prefix + suffix 做窗口模糊搜
-  - 等真碰到失败 case 再做
-
----
-
 ## 验收
 
 `m2-learning-records` 合回 main 前必须满足：
