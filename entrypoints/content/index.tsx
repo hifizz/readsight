@@ -15,7 +15,7 @@ import ReactDOM from 'react-dom/client';
 import { useEffect, useState } from 'react';
 import type { SelectionContext, SelectionType, BackgroundMessage } from '@/lib/messaging';
 import { resolveLemma } from '@/lib/lemmatize';
-import { TranslateFab } from './translate';
+import { TranslateFab, togglePageTranslation } from './translate';
 
 const BACKEND = import.meta.env.WXT_BACKEND_URL ?? 'http://localhost:4010';
 const KNOWN_ITEMS_KEY = 'english-agent:known-items';
@@ -75,10 +75,12 @@ export default defineContentScript({
     // 被动重逢扫描（PRD §5.2 / §8.2 弱正信号）—— 在 idle 时扫一次
     schedulePassiveScan();
 
-    // 接 sidepanel 经 background 转过来的"回原文高亮"请求（PRD §8.3）
+    // 接 background 转过来的消息：回原文高亮（PRD §8.3）+ 右键 / 快捷键切翻译
     chrome.runtime.onMessage.addListener((message: BackgroundMessage) => {
       if (message.type === 'HIGHLIGHT_ANCHOR') {
         highlightAnchor(message.payload);
+      } else if (message.type === 'TOGGLE_TRANSLATE') {
+        togglePageTranslation();
       }
       return false;
     });

@@ -13,7 +13,7 @@
  *     复制中文做二次划词，也便于撤销时 querySelectorAll 全清
  *   - 块 → element 映射用 data-eag-id 属性绑定
  */
-import { useState } from 'react';
+import { useSyncExternalStore } from 'react';
 import { Languages, X } from 'lucide-react';
 import { Readability, isProbablyReaderable } from '@mozilla/readability';
 import type { BackgroundMessage, TranslationResult } from '@/lib/messaging';
@@ -488,45 +488,72 @@ class TranslationOrchestrator {
 
 const orchestrator = new TranslationOrchestrator();
 
-export type FabStatus = 'idle' | 'active';
+// --- 模块级共享状态 -------------------------------------------------------
+//
+// 状态从 React 里提出来：FAB 用 useSyncExternalStore 订阅，外部调用方
+// (右键菜单 / 快捷键 → background → content script onMessage) 直接调
+// togglePageTranslation() 也能联动 UI。
 
-interface FabProps {
-  onStatusChange?: (s: FabStatus) => void;
+export type FabStatus = 'idle' | 'active';
+interface ModuleState {
+  status: FabStatus;
+  done: number;
+  total: number;
 }
 
-export function TranslateFab({ onStatusChange }: FabProps) {
-  const [status, setStatus] = useState<FabStatus>('idle');
-  const [progress, setProgress] = useState<{ done: number; total: number }>({ done: 0, total: 0 });
+let moduleState: ModuleState = { status: 'idle', done: 0, total: 0 };
+const stateListeners = new Set<() => void>();
 
-  function update(next: FabStatus) {
-    setStatus(next);
-    onStatusChange?.(next);
+function setModuleState(next: ModuleState): void {
+  moduleState = next;
+  for (const cb of stateListeners) cb();
+}
+
+function subscribeModuleState(cb: () => void): () => void {
+  stateListeners.add(cb);
+  return () => {
+    stateListeners.delete(cb);
+  };
+}
+
+function getModuleState(): ModuleState {
+  return moduleState;
+}
+
+/**
+ * 外部统一入口：FAB 点击、右键菜单、快捷键都调这个函数。
+ * idle ↔ active 切换；active 时点击 = 撤销。
+ */
+export function togglePageTranslation(): void {
+  if (moduleState.status === 'active') {
+    orchestrator.stop();
+    undoAllTranslations();
+    setModuleState({ status: 'idle', done: 0, total: 0 });
+    return;
   }
-
-  function handleClick() {
-    if (status === 'active') {
-      // 撤销：停止编排 + 清掉所有注入译文
-      orchestrator.stop();
-      undoAllTranslations();
-      update('idle');
-      setProgress({ done: 0, total: 0 });
-      return;
-    }
-
-    // 启动：抽取所有 block，注册 IntersectionObserver 视口驱动翻译
-    const blocks = extractArticleBlocks();
-    if (blocks.length === 0) {
-      console.warn('[english-agent] no translatable blocks found');
-      return;
-    }
-    setProgress({ done: 0, total: blocks.length });
-    update('active');
-    orchestrator.start(blocks, {
-      onProgress: () => setProgress((p) => ({ ...p, done: p.done + 1 })),
-    });
+  const blocks = extractArticleBlocks();
+  if (blocks.length === 0) {
+    console.warn('[english-agent] no translatable blocks found');
+    return;
   }
+  setModuleState({ status: 'active', done: 0, total: blocks.length });
+  orchestrator.start(blocks, {
+    onProgress: () => {
+      setModuleState({ ...moduleState, done: moduleState.done + 1 });
+    },
+  });
+}
 
-  return <FabButton status={status} progress={progress} onClick={handleClick} />;
+export function TranslateFab() {
+  // 订阅模块级状态：外部 toggle 也能联动 FAB UI
+  const s = useSyncExternalStore(subscribeModuleState, getModuleState, getModuleState);
+  return (
+    <FabButton
+      status={s.status}
+      progress={{ done: s.done, total: s.total }}
+      onClick={togglePageTranslation}
+    />
+  );
 }
 
 function FabButton({

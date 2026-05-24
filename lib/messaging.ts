@@ -41,7 +41,9 @@ export type BackgroundMessage =
   | {
       type: 'TRANSLATE_BLOCKS';
       payload: { blocks: Array<{ id: string; text: string }> };
-    };
+    }
+  /** Background → content script：右键菜单 / 快捷键触发的"开关全文翻译" */
+  | { type: 'TOGGLE_TRANSLATE' };
 
 /** /api/translate 单块结果 —— 跟后端 route 返回 shape 同步。 */
 export interface TranslationResult {

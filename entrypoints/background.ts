@@ -20,6 +20,29 @@ const BACKEND = import.meta.env.WXT_BACKEND_URL ?? 'http://localhost:4010';
 const STORAGE_KEY_LATEST = 'english-agent:latest-selection-id';
 const STORAGE_KEY_PREFIX = 'english-agent:selection:';
 
+const CONTEXT_MENU_ID = 'english-agent-toggle-translate';
+
+/** 触发当前 tab 的 content script 切换全文翻译（右键 / 快捷键共用） */
+function toggleTranslateInActiveTab(tabId?: number): void {
+  if (tabId == null) {
+    chrome.tabs
+      .query({ active: true, currentWindow: true })
+      .then((tabs) => {
+        const id = tabs[0]?.id;
+        if (id != null) {
+          chrome.tabs.sendMessage(id, { type: 'TOGGLE_TRANSLATE' }).catch(() => {
+            // content script 未注入（chrome:// 等内部页）—— 静默
+          });
+        }
+      })
+      .catch((err) => console.warn('[english-agent] tabs.query failed', err));
+    return;
+  }
+  chrome.tabs.sendMessage(tabId, { type: 'TOGGLE_TRANSLATE' }).catch(() => {
+    // 同上
+  });
+}
+
 export default defineBackground(() => {
   // 把"点扩展图标"绑成"打开 sidepanel"。Chrome MV3 默认是触发 default_popup，
   // 我们没有 popup，所以打开 side panel 是更对的语义。
@@ -27,8 +50,43 @@ export default defineBackground(() => {
     .setPanelBehavior({ openPanelOnActionClick: true })
     .catch((err: unknown) => console.error('[english-agent] setPanelBehavior failed', err));
 
+  // 右键菜单：单一条目"翻译/撤销全文 (English Agent)"。
+  // 在 onInstalled 里 create，避免 SW 重启 / 扩展更新时重复 create 抛"duplicate id"
+  chrome.runtime.onInstalled.addListener(() => {
+    try {
+      chrome.contextMenus.create({
+        id: CONTEXT_MENU_ID,
+        title: '翻译 / 撤销 (English Agent)',
+        contexts: ['page', 'selection'],
+      });
+    } catch (err) {
+      // 重复 id 时 chrome.runtime.lastError 会被设置；create 同步返回
+      console.warn('[english-agent] contextMenus.create:', err);
+    }
+  });
+  chrome.contextMenus.onClicked.addListener((info, tab) => {
+    if (info.menuItemId === CONTEXT_MENU_ID) {
+      toggleTranslateInActiveTab(tab?.id);
+    }
+  });
+
+  // 快捷键：在 manifest.commands 里定义；按下时触发同一个 toggle 入口
+  chrome.commands.onCommand.addListener((command) => {
+    if (command === 'toggle-translate') {
+      toggleTranslateInActiveTab();
+    }
+  });
+
   chrome.runtime.onMessage.addListener((message: BackgroundMessage, sender, sendResponse) => {
     if (message.type === 'ASK_WITH_SELECTION') {
+      // CRITICAL: chrome.sidePanel.open() 必须在 user gesture 链路里同步发射 ——
+      // 任何 await 都会让 gesture 失效（Chrome MV3）。所以这里 _不 await_，
+      // 直接发火 + 后续工作走 handleAskWithSelection。
+      if (sender.tab?.id != null) {
+        chrome.sidePanel
+          .open({ tabId: sender.tab.id })
+          .catch((err: unknown) => console.warn('[english-agent] sidePanel.open failed', err));
+      }
       handleAskWithSelection(message.payload, sender)
         .then(() => sendResponse({ ok: true }))
         .catch((err) => {
@@ -103,25 +161,18 @@ async function handleHighlightRequest(payload: {
 
 async function handleAskWithSelection(
   ctx: SelectionContext,
-  sender: chrome.runtime.MessageSender,
+  _sender: chrome.runtime.MessageSender,
 ) {
+  // sidePanel.open() 已经在 onMessage 顶部同步分支里发射了 —— 那个分支
+  // 必须无 await 才能保住 Chrome MV3 的 user gesture，这里就专注做剩下
+  // 两件可以 async 的事：存 storage + 转发 SELECTION_READY。
+
   // 双键：用 id 索引完整 SelectionContext + 一个 "latest" 指针。
   // 后者让 sidepanel 启动时一行 get 就能拿到"最近一次选区"做兜底恢复。
   await chrome.storage.session.set({
     [STORAGE_KEY_PREFIX + ctx.id]: ctx,
     [STORAGE_KEY_LATEST]: ctx.id,
   });
-
-  // 必须在原始 user gesture 链路里调用 sidePanel.open()。
-  // content script 的 pill onClick → runtime.sendMessage → 这里 —— Chrome 会把
-  // 这条链路视为 user gesture 延续（至少 5s 窗口内）。
-  if (sender.tab?.id != null) {
-    try {
-      await chrome.sidePanel.open({ tabId: sender.tab.id });
-    } catch (err) {
-      console.warn('[english-agent] sidePanel.open failed', err);
-    }
-  }
 
   // 推给 sidepanel。如果 sidepanel 刚被 open 还没挂载完，listener 还没注册，
   // sendMessage 会抛 "Could not establish connection" —— 没关系，sidepanel

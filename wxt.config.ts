@@ -20,9 +20,16 @@ export default defineConfig({
   manifest: {
     name: 'English Agent',
     description: 'TechCrunch 沉浸式精读 (划词精读 + 双语翻译)',
-    permissions: ['sidePanel', 'storage', 'activeTab'],
+    permissions: ['sidePanel', 'storage', 'activeTab', 'contextMenus'],
     action: {
       default_title: 'English Agent',
+    },
+    commands: {
+      'toggle-translate': {
+        // 用 Alt+T：Chrome 没占；macOS 上不跟系统快捷键冲突
+        suggested_key: { default: 'Alt+T', mac: 'Alt+T' },
+        description: '翻译 / 撤销当前页面（English Agent）',
+      },
     },
   },
 });
