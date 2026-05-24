@@ -81,9 +81,12 @@ export const encounterEvents = pgTable(
     id: text('id').primaryKey(),
     itemKey: text('item_key').notNull(),
     surfaceForm: text('surface_form').notNull(),
-    contextRef: text('context_ref')
-      .notNull()
-      .references(() => selectionContexts.id, { onDelete: 'cascade' }),
+    // 主动事件 (lookup / deepchat / quick) 必有选区；被动重逢
+    // (passive_reencounter) 是浏览正文时扫到的词，没有用户主动选择 → nullable
+    contextRef: text('context_ref').references(
+      () => selectionContexts.id,
+      { onDelete: 'cascade' },
+    ),
     eventType: eventTypeEnum('event_type').notNull(),
     outcome: outcomeEnum('outcome'),
     ts: timestamp('ts', { withTimezone: true }).notNull().defaultNow(),

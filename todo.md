@@ -47,28 +47,28 @@ M0/M1 已上线（main 分支 commit 链 `da9dc45..e486300`）：选区捕获、
 
 ---
 
-## Phase C — 被动重逢扫描
+## Phase C — 被动重逢扫描 ✅
 
-- [ ] **C.1** `GET /api/known-items` —— 返回当前用户已查 itemKey 数组（本期单用户，全量返）
-  - 仅返字符串数组（去重），方便 content script 当 set 用
-  - 验证：curl 看到 Phase A 积累的 itemKey 全在
+- [x] **C.0** ✓ Schema 改 `encounter_events.context_ref` 为 nullable（drizzle push --force 应用）+ schema.ts 标注；passive 没具体选区
+- [x] **C.1** ✓ `GET /api/known-items` 返 `{ lemmas: string[] }`，从 itemKey 拆出 lemma 去重；只计 lookup/deepchat/quick 三种主动事件
+- [x] **C.2** ✓ Content script 拉 known-items + chrome.storage.session 缓存 5 分钟
+- [x] **C.3** ✓ `lib/lemmatize.ts` 浏览器版（同 server resolveLemma 算法）+ `lib/wink-lemmatizer.d.ts` 类型；content script `runPassiveScan` 在 load + 1s idle 触发，`Intl.Segmenter` 切词 + lemmatize 匹配；过滤 active 已选 + reportedPassive + scanSeen + len<3 + 含数字
+- [x] **C.4** ✓ Background 收到 `PASSIVE_HITS` 转发到 `POST /api/encounter`；后端 `findCanonicalItemKey` 把 lemma 映射回用户历史 itemKey（保持 lemma#pos 一致），`recordPassiveReencounterDeduped` 同 itemKey/天去重
 
-- [ ] **C.2** Content script 拉 known-items + 缓存
-  - 启动时拉一次，写 chrome.storage.session key `english-agent:known-items`（5 分钟 TTL）
-  - 5 分钟内重复访问 TechCrunch 文章直接读 cache
-  - 验证：DevTools Application → Storage 看到对应 key
+**实测**：
+  - `POST /api/encounter` 2 hits → written:2,skipped:0；DB 多 out#noun + run#unknown 两行 passive_reencounter；context_ref=NULL
+  - 同 batch 再发 → written:0,skipped:1（dedup 生效）
 
-- [ ] **C.3** 扫描 + 过滤
-  - 走 `findContentBlock` 一样的 block selector，所有 block textContent 拼起来
-  - `Intl.Segmenter('en', {granularity:'word'})` 切词，对每个 token wink-lemmatize（**前端要装 wink-lemmatizer 一份**，浏览器侧也用）
-  - 命中 known-items 集合 → 进候选；过滤掉本会话用户主动选过的（用 React state 维护一个 Set）
-  - 等待 idle（document.readyState === 'complete' + setTimeout 1s）才扫，不影响首屏
+**已知 trade-off**：
+  - 扩展 bundle 因 wink-lemmatizer 涨到 1.93MB（content script），保留前端 lemmatize 避免向 server 发文本（用户拍板，决策 #4）
 
-- [ ] **C.4** `POST /api/encounter` 写 `passive_reencounter`
-  - 前端 batch 发送：扫到的命中一次性 POST 数组，后端循环 recordEncounter
-  - 后端去重：同一 url + lemma + 今天 已经有事件则 skip
-  - 不上 UI（PRD §5.2 明确"本期只埋点"）
-  - 验证：访问含已查词的文章，DB 多 N 行 passive_reencounter，且当天重复访问不会重复打点
+---
+
+## Phase D — 回原文高亮 ✅
+
+- [x] **D.1** ✓ Content script `chrome.runtime.onMessage` 收 `HIGHLIGHT_ANCHOR`；`highlightAnchor()` 用 prefix+exact+suffix 前 60 字符做高置信度匹配，退化到 exact 子串；`scrollIntoView({block:'center'})` + `flashHighlight()` 临时换 background-color 1.5s
+- [x] **D.2** ✓ Sidepanel `handleSelectRecord` 在 setSelection 后发 `HIGHLIGHT_REQUEST { url, anchor }` 给 background；background `handleHighlightRequest` 走 `chrome.tabs.query({url})` 找原文 tab → `chrome.tabs.update + windows.update` 切到前台 → `chrome.tabs.sendMessage` 转 HIGHLIGHT_ANCHOR；找不到 tab 抛错不打扰用户
+- [x] **D.3** 可选 fuzzy 回定位 —— 暂时不做，当前 prefix+suffix 前 60 字符匹配对 TechCrunch 文章结构已经足够
 
 ---
 

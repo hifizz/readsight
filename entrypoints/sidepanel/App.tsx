@@ -59,7 +59,7 @@ export default function App() {
     ),
   });
 
-  // 点条目：load SelectionContext 详情 → 切回 chat + 触发新 thread
+  // 点条目：load SelectionContext 详情 → 切回 chat + 触发原文 tab 高亮
   const handleSelectRecord = useCallback(
     async (record: HistoryRecord) => {
       if (!record.lastContextRef) return;
@@ -69,9 +69,18 @@ export default function App() {
         );
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const ctx = (await res.json()) as SelectionContext;
-        // 切到 chat tab 先于 setSelection，避免在 records 视图里闪一下语境卡
         setActiveTab('chat');
         setSelection(ctx);
+
+        // 让原文 tab 滚到对应位置 + 闪黄高亮（PRD §8.3 跳回原文）
+        const highlightMsg: BackgroundMessage = {
+          type: 'HIGHLIGHT_REQUEST',
+          payload: { url: ctx.source.url, anchor: ctx.anchor },
+        };
+        chrome.runtime.sendMessage(highlightMsg).catch((err) => {
+          // tab 已关或 background 没响应都常见，不打扰用户
+          console.warn('[sidepanel] HIGHLIGHT_REQUEST failed', err);
+        });
       } catch (err) {
         console.warn('[sidepanel] load selection-context failed', err);
       }

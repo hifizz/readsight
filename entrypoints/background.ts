@@ -16,6 +16,7 @@
  */
 import type { BackgroundMessage, SelectionContext } from '@/lib/messaging';
 
+const BACKEND = import.meta.env.WXT_BACKEND_URL ?? 'http://localhost:4010';
 const STORAGE_KEY_LATEST = 'english-agent:latest-selection-id';
 const STORAGE_KEY_PREFIX = 'english-agent:selection:';
 
@@ -38,9 +39,49 @@ export default defineBackground(() => {
         });
       return true; // 标记"我会异步 sendResponse"
     }
+    if (message.type === 'PASSIVE_HITS') {
+      // 转发给 /api/encounter；不需要等响应，content script 也不要回执
+      fetch(`${BACKEND}/api/encounter`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: message.payload }),
+      })
+        .then((r) => {
+          if (!r.ok) console.warn('[english-agent] /api/encounter HTTP', r.status);
+        })
+        .catch((err) => console.warn('[english-agent] /api/encounter failed', err));
+      return false;
+    }
+    if (message.type === 'HIGHLIGHT_REQUEST') {
+      handleHighlightRequest(message.payload)
+        .then(() => sendResponse({ ok: true }))
+        .catch((err) => sendResponse({ ok: false, error: String(err) }));
+      return true;
+    }
     return false;
   });
 });
+
+/**
+ * 在所有 tabs 里找一个 URL 匹配的（PRD §8.3 跳回原文），把 HIGHLIGHT_ANCHOR
+ * 转发给那个 tab 的 content script，并把 tab 切到前台。
+ * 没找到匹配 tab = 用户已关原文页 → 抛错让 sidepanel 提示。
+ */
+async function handleHighlightRequest(payload: {
+  url: string;
+  anchor: SelectionContext['anchor'];
+}) {
+  const tabs = await chrome.tabs.query({ url: payload.url });
+  if (tabs.length === 0) {
+    throw new Error('source tab is closed');
+  }
+  const tab = tabs[0];
+  if (tab.id == null) throw new Error('tab has no id');
+  await chrome.tabs.update(tab.id, { active: true });
+  if (tab.windowId != null) await chrome.windows.update(tab.windowId, { focused: true });
+  const msg: BackgroundMessage = { type: 'HIGHLIGHT_ANCHOR', payload: payload.anchor };
+  await chrome.tabs.sendMessage(tab.id, msg);
+}
 
 async function handleAskWithSelection(
   ctx: SelectionContext,

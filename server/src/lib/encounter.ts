@@ -20,7 +20,7 @@ export type EncounterOutcome = 'understood' | 'still_unsure';
 export interface RecordEncounterInput {
   surfaceForm: string;
   itemKey: string;
-  /** SelectionContext.id；不带选区时（理论上不应该）传 null 让 FK 不挂 */
+  /** SelectionContext.id；passive_reencounter 传 null */
   contextRef: string | null;
   eventType: EncounterEventType;
   outcome?: EncounterOutcome;
@@ -28,11 +28,6 @@ export interface RecordEncounterInput {
 
 export async function recordEncounter(input: RecordEncounterInput): Promise<void> {
   try {
-    if (!input.contextRef) {
-      // 没有选区的事件目前不入库 —— encounter_events.context_ref 是 NOT NULL，
-      // 而且没语境的查询对 FSRS 不可分析。直接静默丢弃。
-      return;
-    }
     await db.insert(encounterEvents).values({
       id: crypto.randomUUID(),
       itemKey: input.itemKey,
@@ -47,16 +42,17 @@ export async function recordEncounter(input: RecordEncounterInput): Promise<void
 }
 
 /**
- * passive_reencounter 专用：同一天同一篇文章同一 itemKey 只记一次。
- * 减少噪声 + 防止打点风暴。
+ * passive_reencounter 专用：同 itemKey 每天最多记一次。
+ *
+ * 简化点：不按 article URL 区分（schema 也没存 URL 字段）。一天读 3 篇文章
+ * 都含同一个词只算一次 passive 信号 —— 对 FSRS 来说这种弱正信号每天 1 次
+ * 已经够用，可以避免打点风暴。
  */
 export async function recordPassiveReencounterDeduped(input: {
   surfaceForm: string;
   itemKey: string;
-  contextRef: string;
 }): Promise<{ written: boolean }> {
   try {
-    // 当天此 itemKey 是否已有 passive 事件？
     const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const existing = await db
       .select({ id: encounterEvents.id })
@@ -66,9 +62,6 @@ export async function recordPassiveReencounterDeduped(input: {
           eq(encounterEvents.itemKey, input.itemKey),
           eq(encounterEvents.eventType, 'passive_reencounter'),
           gte(encounterEvents.ts, oneDayAgo),
-          // 同一篇文章：通过 selection_contexts.url 关联，简化为同 contextRef
-          // 如果不同 contextRef 但同 url 也想去重，可以改 join；本期先用 contextRef 粗匹
-          sql`${encounterEvents.contextRef} = ${input.contextRef}`,
         ),
       )
       .limit(1);
@@ -78,7 +71,7 @@ export async function recordPassiveReencounterDeduped(input: {
       id: crypto.randomUUID(),
       itemKey: input.itemKey,
       surfaceForm: input.surfaceForm,
-      contextRef: input.contextRef,
+      contextRef: null,
       eventType: 'passive_reencounter',
     });
     return { written: true };
@@ -86,4 +79,32 @@ export async function recordPassiveReencounterDeduped(input: {
     console.warn('[encounter] passive insert failed', err);
     return { written: false };
   }
+}
+
+/**
+ * 给定 lemma，找用户历史里这个 lemma 最常用的 itemKey（首选主动事件的，
+ * 一致性更好），用于 passive_reencounter 时复用同一个 itemKey。
+ *
+ * 找不到时 fallback 到 "${lemma}#unknown"。
+ */
+export async function findCanonicalItemKey(lemma: string): Promise<string> {
+  try {
+    const prefix = `${lemma}#`;
+    // 取这个 lemma 的最近主动事件的 itemKey
+    const rows = await db
+      .select({ itemKey: encounterEvents.itemKey })
+      .from(encounterEvents)
+      .where(
+        and(
+          sql`${encounterEvents.itemKey} LIKE ${prefix + '%'}`,
+          sql`${encounterEvents.eventType} IN ('lookup','deepchat','quick')`,
+        ),
+      )
+      .orderBy(sql`${encounterEvents.ts} DESC`)
+      .limit(1);
+    if (rows.length > 0) return rows[0].itemKey;
+  } catch (err) {
+    console.warn('[encounter] findCanonicalItemKey failed', err);
+  }
+  return `${lemma}#unknown`;
 }

@@ -30,7 +30,13 @@ export interface SelectionContext {
 
 export type BackgroundMessage =
   | { type: 'ASK_WITH_SELECTION'; payload: SelectionContext }
-  | { type: 'SELECTION_READY'; payload: SelectionContext };
+  | { type: 'SELECTION_READY'; payload: SelectionContext }
+  /** Content script 扫描发现的被动重逢命中（PRD §5.2）；background 转发到 /api/encounter */
+  | { type: 'PASSIVE_HITS'; payload: Array<{ surfaceForm: string; lemma: string }> }
+  /** Sidepanel 点 records 条目 → 让 background 找到原文 tab 触发高亮（PRD §8.3） */
+  | { type: 'HIGHLIGHT_REQUEST'; payload: { url: string; anchor: SelectionContext['anchor'] } }
+  /** Background → content script：在当前 tab 的页面上高亮 anchor 指向的文本 */
+  | { type: 'HIGHLIGHT_ANCHOR'; payload: SelectionContext['anchor'] };
 
 /**
  * `/api/lookup` 返回结构。前端 WordCard 直接吃这个 shape；后端缓存表也存这个。

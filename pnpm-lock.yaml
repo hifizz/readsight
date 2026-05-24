@@ -59,6 +59,9 @@ importers:
       tw-shimmer:
         specifier: ^0.4.11
         version: 0.4.11(tailwindcss@4.3.0)
+      wink-lemmatizer:
+        specifier: ^3.0.4
+        version: 3.0.4
       zustand:
         specifier: ^5.0.13
         version: 5.0.13(@types/react@19.2.15)(react@19.2.6)(use-sync-external-store@1.6.0(react@19.2.6))
@@ -4207,6 +4210,15 @@ packages:
   widest-line@5.0.0:
     resolution: {integrity: sha512-c9bZp7b5YtRj2wOe6dlj32MK+Bx/M/d+9VB2SHM1OtsUHR0aV0tdP6DWh/iMt0kWi1t5g1Iudu6hQRNd1A4PVA==}
     engines: {node: '>=18'}
+
+  wink-lemmatizer@3.0.4:
+    resolution: {integrity: sha512-EdLJfy1xLF2ze2cp9Z3qiEWjiq+V8ZVRWiWooCXTXR0AyPxY8ezm4E0puJ0yIj5szzED9tcXV2U7RboaGvboFw==}
+
+  wink-lexicon@2.2.0:
+    resolution: {integrity: sha512-QIuHS9r/HV6q3PCCz6pymg4gbsryW9wDk8CHdU+sDn0kJcHpECNDIcdY0Q/mZpqxtFLp9dzIw7pjcStLBbGZGg==}
+
+  wink-porter2-stemmer@2.0.1:
+    resolution: {integrity: sha512-0g+RkkqhRXFmSpJQStVXW5N/WsshWpJXsoDRW7DwVkGI2uDT6IBCoq3xdH5p6IHLaC6ygk7RWUsUx4alKxoagQ==}
 
   winreg@0.0.12:
     resolution: {integrity: sha512-typ/+JRmi7RqP1NanzFULK36vczznSNN8kWVA9vIqXyv8GhghUlwhGp1Xj3Nms1FsPcNnsQrJOR10N58/nQ9hQ==}
@@ -8673,6 +8685,15 @@ snapshots:
   widest-line@5.0.0:
     dependencies:
       string-width: 7.2.0
+
+  wink-lemmatizer@3.0.4:
+    dependencies:
+      wink-lexicon: 2.2.0
+      wink-porter2-stemmer: 2.0.1
+
+  wink-lexicon@2.2.0: {}
+
+  wink-porter2-stemmer@2.0.1: {}
 
   winreg@0.0.12: {}
 
