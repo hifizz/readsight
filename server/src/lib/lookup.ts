@@ -214,12 +214,14 @@ async function translateOnce(
 }
 
 /**
- * 翻译一个 POS 下的所有定义，两层防御：
- *   1. 首选 Zhipu GLM-4-Flash（如果配了 ZHIPU_API_KEY）—— 真小快模型，~200-400ms
- *   2. Fallback: MiniMax DEFAULT_MODEL_ID（thinking 大模型）—— 当 Zhipu 失败 / 未配置
+ * 翻译一个 POS 下的所有定义，三层防御（按试错代价从低到高）：
+ *   1. 首选 Zhipu GLM-4-Flash（如果配了 ZHIPU_API_KEY）—— ~1-2s
+ *   2. Zhipu 同一调用再试一次 —— 又一个 ~1-2s
+ *      理由：实测发现 Next.js dev (Turbopack) 下偶发响应截断
+ *      ("Unterminated string in JSON at position 19")，重试基本能命中
+ *   3. Fallback: MiniMax DEFAULT_MODEL_ID 大 thinking —— ~18s 但稳
  *
- * Zhipu 没配 = 直接走 MiniMax 路径（PR 兼容：可不动 env 仍能跑）。
- * Zhipu 配了但失败（429 / 网络 / key 失效）= 透明降级，单次多一跳。
+ * Zhipu 没配 = 跳过 1、2，直接走 MiniMax。
  */
 async function translateOnePos(
   word: string,
@@ -228,21 +230,25 @@ async function translateOnePos(
 ): Promise<string[] | null> {
   if (defs.length === 0) return [];
 
-  // 1) Primary: Zhipu GLM-4-Flash
+  // 1) + 2) Primary: Zhipu GLM-4-Flash with one retry
   if (isZhipuConfigured() && zhipuFlash) {
-    try {
-      const arr = await translateOnce(word, pos, defs, zhipuFlash, 'glm-4-flash', 400);
-      if (arr) return arr;
-      // 返 null = 解析失败，可能 LLM 输出不规整；继续 fallback
-    } catch (err) {
-      console.warn(
-        `[lookup] zh ${pos} (glm-4-flash) threw, falling back to MiniMax:`,
-        err instanceof Error ? err.message : err,
-      );
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const arr = await translateOnce(word, pos, defs, zhipuFlash, `glm-4-flash#${attempt}`, 400);
+        if (arr) return arr;
+        // 返 null = JSON 解析失败；进入下一轮重试（attempt 2）或 fallback
+      } catch (err) {
+        console.warn(
+          `[lookup] zh ${pos} (glm-4-flash#${attempt}) threw:`,
+          err instanceof Error ? err.message : err,
+        );
+        // 异常也走重试 / fallback
+      }
     }
+    console.warn(`[lookup] zh ${pos}: Zhipu both attempts failed, falling back to MiniMax`);
   }
 
-  // 2) Fallback: MiniMax thinking model
+  // 3) Fallback: MiniMax thinking model
   try {
     return await translateOnce(
       word,
