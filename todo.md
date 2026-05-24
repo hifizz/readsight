@@ -25,41 +25,15 @@ M0/M1 已上线（main 分支 commit 链 `da9dc45..e486300`）：选区捕获、
 
 ---
 
-## Phase A — 后端 EncounterEvent 接通
+## Phase A — 后端 EncounterEvent 接通 ✅
 
-- [ ] **A.1** `lookupWord` 返回 lemma + pos 给上层使用
-  - lemma 已有；pos 从 Free Dictionary 首个 `partsOfSpeech[].pos` 取；LLM 兜底也填一个 fallback 字符串
-  - 同时计算 `itemKey = "${lemma}#${pos}"`，作为 LookupResult 顶层字段
-  - 验证：`curl /api/lookup?word=outed` 响应有 `itemKey: "out#noun"`（或类似），前端目前不消费但事件落库需要
-
-- [ ] **A.2** `server/src/lib/encounter.ts` —— `recordEncounter(input)` 通用工具
-  - 参数：`{ surfaceForm, itemKey, contextRef, eventType, outcome? }`
-  - 内部生成 id，insert encounter_events，**异常吞掉，不阻塞主流程**
-  - 验证：手调一次，DB `encounter_events` 多一行
-
-- [ ] **A.3** `server/src/lib/selection-context.ts` —— `upsertSelectionContext(ctx)`
-  - PK = ctx.id，存在则 `onConflictDoNothing`；不存在则 insert
-  - 把前端 SelectionContext schema 字段映射成 DB 列名（camelCase ↔ snake_case）
-  - 验证：从 sidepanel 触发任意一次有 selectionContext 的请求，DB `selection_contexts` 多一行
-
-- [ ] **A.4** `/api/lookup` 改 POST，接受 `{ word, selectionContext? }`
-  - 流程：upsertSelectionContext (如有) → lookupWord → recordEncounter(eventType:'lookup', itemKey, contextRef=selectionContext?.id ?? null)
-  - 旧 GET 保留供 curl 调试用，但前端 WordCard 切到 POST
-  - 同步改 `components/word-card.tsx`：增加 `selectionContext?: SelectionContext` prop，从 sidepanel App.tsx 传入
-  - 验证：选个单词 → WordCard 出来 → DB `encounter_events` 多一行 lookup 事件 + `selection_contexts` 多一行
-
-- [ ] **A.5** `/api/chat` onFinish 落库
-  - 进入路由先 upsertSelectionContext（如有）
-  - streamText 加 `onFinish` 回调：写 chat_messages（user 一条 + assistant 一条）+ 当 selection.type === 'word' 时调 lookupWord 拿 itemKey + recordEncounter(eventType:'deepchat')
-  - 所有落库都是 fire-and-forget，**不阻塞 stream 关闭**
-  - 验证：跟 MiniMax 对一轮，DB `chat_messages` +2 行，单词类选区时 `encounter_events` +1 行 deepchat
-
-- [ ] **A.6** `GET /api/history` 路由
-  - query: `?limit=20&before=<ts>` 时间游标分页
-  - 返回：按 itemKey GROUP BY，每条 `{ itemKey, lastSurfaceForm, totalCount, lastTs, lastContextRefId, eventTypes:[...] }`，按 lastTs DESC
-  - 验证：curl 看到 A.4 / A.5 产生的事件按预期聚合
-
-- [ ] **A.7** Typecheck + drizzle migrations 都没变（只新增 lib 文件、改路由）；commit phase A
+- [x] **A.1** ✓ `lookupWord` 输出 `itemKey: "${lemma}#${pos}"`；新加 `deriveItemKey()` 工具；老缓存条目读取时按 partsOfSpeech 现 derive 兼容
+- [x] **A.2** ✓ `server/src/lib/encounter.ts`：`recordEncounter` + `recordPassiveReencounterDeduped`（后者本期 Phase C 用）；try/catch 吞异常
+- [x] **A.3** ✓ `server/src/lib/selection-context.ts`：`upsertSelectionContext` + 共享 `SelectionContextDTO` 类型；camelCase ↔ snake_case 列映射；ONCONFLICT 幂等
+- [x] **A.4** ✓ `/api/lookup` 加 POST `{ word, selectionContext? }`：upsert → lookup → recordEncounter('lookup')；GET 保留为只读 curl 路径。WordCard 改 POST（有 selectionContext 时）
+- [x] **A.5** ✓ `/api/chat` 入路由 upsertSelectionContext + streamText onFinish 起 `setImmediate` 落 chat_messages 两条（user+assistant，threadId=ctx.id）+ word 选区时 lookupWord + recordEncounter('deepchat')；fire-and-forget 不阻塞 stream
+- [x] **A.6** ✓ `GET /api/history?limit&before`：按 itemKey GROUP BY 聚合 `{ itemKey, lastSurfaceForm, lastTs, lastContextRef, totalCount, eventTypes[] }`；时间游标 nextCursor
+- [x] **A.7** ✓ 双端 `tsc --noEmit` 零错误；E2E smoke test：lookup 写 1 行事件、chat 写 2 chat_messages + 1 deepchat、history 聚合 totalCount=2 / eventTypes=[lookup,deepchat]
 
 ---
 

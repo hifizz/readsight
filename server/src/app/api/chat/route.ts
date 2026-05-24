@@ -2,39 +2,34 @@
  * POST /api/chat —— 唯一的对话流式入口。
  *
  * 设计要点：
- *   1. 走 Vercel AI SDK v6 的 streamText + `toUIMessageStreamResponse()`，
- *      与扩展端的 assistant-ui `useChatRuntime` + `DefaultChatTransport`
- *      端到端协议对齐。
- *   2. 从请求体里读可选的 `selectionContext`（扩展端 transport.body() 注入），
- *      把"用户选中的词/句/段、所在句、所在段"写进 system prompt
- *      —— PRD §6.1 "结合本句的地道译法"必须靠这步实现。
- *   3. 显式 export `OPTIONS` 返回 204 让浏览器扩展的 CORS 预检直接通过；
- *      CORS 响应头由 `next.config.ts` 全局注入。
- *
- * 还没做（按 todo 计划）：
- *   - 落库 EncounterEvent（PRD §5.2 / §7.3）—— schema 已建，待写 onFinish 回调
- *   - 单词模式：把 selection.type === 'word' 时去查词典 API（PRD §6.2）
+ *   1. Vercel AI SDK v6 `streamText` + `toUIMessageStreamResponse()`，与扩展端的
+ *      assistant-ui `useChatRuntime` + `DefaultChatTransport` 端到端对齐。
+ *   2. 请求体里可选的 `selectionContext` 写进 system prompt（PRD §6.1 结合语境）。
+ *   3. M2 落库：
+ *      - 进入路由时 upsertSelectionContext（如有）—— 后端是唯一真相源
+ *      - streamText.onFinish 把 user + assistant 两条 chat_messages 写库
+ *        （threadId = selectionContext.id，M4 重放语境需要这条线）
+ *      - 当 selection.type === 'word' 时调 lookupWord 拿 itemKey + recordEncounter(deepchat)
+ *      - 所有落库 fire-and-forget，不阻塞 stream
  */
+import crypto from 'node:crypto';
 import { streamText, convertToModelMessages, type UIMessage } from 'ai';
 import { minimax, DEFAULT_MODEL_ID } from '@/lib/minimax';
+import { db } from '@/db/client';
+import { chatMessages } from '@/db/schema';
+import { upsertSelectionContext, type SelectionContextDTO } from '@/lib/selection-context';
+import { recordEncounter } from '@/lib/encounter';
+import { lookupWord } from '@/lib/lookup';
 
-// Vercel 边缘函数的最大执行时间。流式响应可能拖到几十秒，所以拉到 30s。
 export const maxDuration = 30;
-// 不要被 Next 的 ISR/SSG 命中：每次都即时执行。
 export const dynamic = 'force-dynamic';
-
-type SelectionContextPayload = {
-  selection: { text: string; type: string };
-  context: { sentence: string; paragraph: string };
-  source?: { title?: string; url?: string };
-};
 
 type ChatRequestBody = {
   messages: UIMessage[];
-  selectionContext?: SelectionContextPayload;
+  selectionContext?: SelectionContextDTO;
 };
 
-function buildSystemPrompt(ctx?: SelectionContextPayload): string {
+function buildSystemPrompt(ctx?: SelectionContextDTO): string {
   if (!ctx) {
     return '你是一位耐心的英语学习助手。回答简洁、贴合用户的英文阅读语境，必要时给地道译法和用法示例。';
   }
@@ -43,11 +38,6 @@ function buildSystemPrompt(ctx?: SelectionContextPayload): string {
     `所在句子："${ctx.context.sentence}"。`,
     `所在段落："${ctx.context.paragraph}"。`,
   ];
-
-  // 按选区类型分支：
-  //   - word: 用户旁边已经能看到词典卡片（IPA / 词性 / 本意定义），LLM 专注讲
-  //     "这个词在本句里的特殊用法 vs 普通用法"，不要重复字典义浪费用户时间。
-  //   - 其他: 句子 / 短语 / 多句，走原本的"结合语境地道译法 + 语法"路径。
   if (ctx.selection.type === 'word') {
     return [
       '你是一位耐心的英语学习助手。用户正在阅读一篇英文文章，刚选中了一个词。',
@@ -59,8 +49,6 @@ function buildSystemPrompt(ctx?: SelectionContextPayload): string {
       '回答简洁，控制在 3-5 句。',
     ].join('\n');
   }
-
-  // 句子 / 短语 / 多句路径（PRD §6.1 结合语境的地道译法）
   return [
     '你是一位耐心的英语学习助手，正在帮助用户读懂一篇英文文章中的一段表达。',
     ...base,
@@ -68,23 +56,87 @@ function buildSystemPrompt(ctx?: SelectionContextPayload): string {
   ].join('\n');
 }
 
+/**
+ * 从 assistant-ui 发来的 UIMessage 里抠出纯文本，用于落库。
+ * UIMessage.parts 是 [{type:'text',text:'...'}, {type:'reasoning',...}] 数组。
+ */
+function extractUserText(m: UIMessage | undefined): string {
+  if (!m || m.role !== 'user') return '';
+  const parts = m.parts ?? [];
+  return parts
+    .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
+    .map((p) => p.text)
+    .join('\n');
+}
+
 export async function POST(req: Request) {
   const body = (await req.json()) as ChatRequestBody;
+  const ctx = body.selectionContext;
+
+  // 1) 同步 upsert SelectionContext —— 后续 onFinish 写 chat_messages 时
+  //    threadId(=ctx.id) 外键依赖它存在
+  if (ctx) {
+    await upsertSelectionContext(ctx);
+  }
 
   const result = streamText({
     model: minimax(DEFAULT_MODEL_ID),
-    system: buildSystemPrompt(body.selectionContext),
-    // convertToModelMessages 在 AI SDK v6 改为 async（把附件/工具调用解析丢进 Promise）。
+    system: buildSystemPrompt(ctx),
     messages: await convertToModelMessages(body.messages ?? []),
+    /**
+     * onFinish 拿到完整 assistant 文本后落库。fire-and-forget：内部不 await
+     * 任何 DB 调用，靠 setImmediate 把它们扔到下一个 tick，避免阻塞 stream close。
+     */
+    onFinish: ({ text }) => {
+      if (!ctx) return; // 没语境 = 不学习的闲聊，不留痕
+      const latestUser = body.messages?.at(-1);
+      const userText = extractUserText(latestUser);
+      const threadId = ctx.id;
+
+      setImmediate(async () => {
+        try {
+          if (userText) {
+            await db.insert(chatMessages).values({
+              id: crypto.randomUUID(),
+              threadId,
+              selectionContextId: ctx.id,
+              role: 'user',
+              content: { text: userText },
+            });
+          }
+          await db.insert(chatMessages).values({
+            id: crypto.randomUUID(),
+            threadId,
+            selectionContextId: ctx.id,
+            role: 'assistant',
+            content: { text },
+          });
+        } catch (err) {
+          console.warn('[chat] chat_messages insert failed', err);
+        }
+
+        // 单词类选区：去查词典拿 itemKey + 记 deepchat 事件
+        // phrase/sentence/multi 没原子 itemKey，按 todo 决策 #2 跳过事件落库
+        if (ctx.selection.type === 'word') {
+          try {
+            const lookup = await lookupWord(ctx.selection.text);
+            void recordEncounter({
+              surfaceForm: ctx.selection.text,
+              itemKey: lookup.itemKey,
+              contextRef: ctx.id,
+              eventType: 'deepchat',
+            });
+          } catch (err) {
+            console.warn('[chat] deepchat encounter logging failed', err);
+          }
+        }
+      });
+    },
   });
 
-  // 用 UIMessage stream 协议把 AI SDK 内部事件流转成 assistant-ui 可消费的 SSE。
   return result.toUIMessageStreamResponse();
 }
 
-// 浏览器扩展从 chrome-extension:// origin 直连本地 dev server 会先发预检 OPTIONS。
-// Next 16 默认对未声明的方法返回 404，所以显式响应 204；
-// CORS 头由 next.config.ts 统一注入。
 export async function OPTIONS() {
   return new Response(null, { status: 204 });
 }

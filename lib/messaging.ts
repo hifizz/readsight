@@ -45,6 +45,8 @@ export type BackgroundMessage =
 export interface LookupResult {
   surfaceForm: string;
   lemma: string;
+  /** PRD §5.2 itemKey = `${lemma}#${pos}`，EncounterEvent 用来串起跨次查询。 */
+  itemKey: string;
   ipa?: { us?: string; uk?: string };
   audioUrl?: string;
   partsOfSpeech: Array<{

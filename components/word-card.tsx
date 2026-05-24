@@ -17,7 +17,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { Volume2, Loader2 } from 'lucide-react';
-import type { LookupResult } from '@/lib/messaging';
+import type { LookupResult, SelectionContext } from '@/lib/messaging';
 import { Button } from '@/components/ui/button';
 
 interface WordCardProps {
@@ -25,6 +25,11 @@ interface WordCardProps {
   surfaceForm: string;
   /** 后端 base URL，由 sidepanel 传入避免再读一次 env。 */
   backendUrl: string;
+  /**
+   * 当前选区。M2 后端用它 upsert selection_contexts + 落 EncounterEvent。
+   * 不传 = 走 GET 纯查询（不留痕）。
+   */
+  selectionContext?: SelectionContext;
 }
 
 type State =
@@ -33,7 +38,7 @@ type State =
   | { kind: 'empty' }
   | { kind: 'error'; message: string };
 
-export function WordCard({ surfaceForm, backendUrl }: WordCardProps) {
+export function WordCard({ surfaceForm, backendUrl, selectionContext }: WordCardProps) {
   const [state, setState] = useState<State>({ kind: 'loading' });
   // surfaceForm 变了就发新请求；用 ref 跟踪上一次的 surfaceForm 把过期响应丢掉。
   const reqIdRef = useRef(0);
@@ -43,10 +48,21 @@ export function WordCard({ surfaceForm, backendUrl }: WordCardProps) {
     setState({ kind: 'loading' });
     const ctrl = new AbortController();
 
-    fetch(
-      `${backendUrl}/api/lookup?word=${encodeURIComponent(surfaceForm)}`,
-      { signal: ctrl.signal },
-    )
+    // POST 带 selectionContext 才能让后端 upsert + 落 EncounterEvent。
+    // 没有 selectionContext 时走 GET 纯查询，不留事件。
+    const promise = selectionContext
+      ? fetch(`${backendUrl}/api/lookup`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ word: surfaceForm, selectionContext }),
+          signal: ctrl.signal,
+        })
+      : fetch(
+          `${backendUrl}/api/lookup?word=${encodeURIComponent(surfaceForm)}`,
+          { signal: ctrl.signal },
+        );
+
+    promise
       .then(async (res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return (await res.json()) as LookupResult;
@@ -66,7 +82,7 @@ export function WordCard({ surfaceForm, backendUrl }: WordCardProps) {
       });
 
     return () => ctrl.abort();
-  }, [surfaceForm, backendUrl]);
+  }, [surfaceForm, backendUrl, selectionContext]);
 
   if (state.kind === 'loading') {
     return (

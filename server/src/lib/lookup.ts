@@ -23,6 +23,12 @@ import { zhipuFlash, isZhipuConfigured } from './zhipu';
 export interface LookupResult {
   surfaceForm: string;
   lemma: string;
+  /**
+   * PRD §5.2 itemKey = lemma + pos。EncounterEvent 按这个串起跨次查询。
+   * 格式 "${lemma}#${pos}"，例如 "out#noun" / "run#verb"。
+   * 词典没给词性时 fallback 到 "${lemma}#unknown"。
+   */
+  itemKey: string;
   ipa?: { us?: string; uk?: string };
   audioUrl?: string;
   partsOfSpeech: Array<{
@@ -32,6 +38,12 @@ export interface LookupResult {
   }>;
   source: 'cache' | 'free-dictionary' | 'llm';
   estimated?: boolean;
+}
+
+/** 从已构造好的 LookupResult 推导 itemKey（cache hit / fresh fetch 都走这条）。 */
+function deriveItemKey(lemma: string, partsOfSpeech: LookupResult['partsOfSpeech']): string {
+  const primaryPos = partsOfSpeech[0]?.pos?.toLowerCase().replace(/\s+/g, '-') || 'unknown';
+  return `${lemma}#${primaryPos}`;
 }
 
 /** 包不带类型的兼容 import：wink-lemmatizer 用 CommonJS module.exports。 */
@@ -80,7 +92,10 @@ interface FreeDictEntry {
   meanings?: FreeDictMeaning[];
 }
 
-async function fetchFreeDictionary(lemmaWord: string): Promise<LookupResult | null> {
+// 返回 LookupResult 主体但暂不挂 itemKey —— 由主管道在合并 cn 后统一 derive。
+type LookupBody = Omit<LookupResult, 'itemKey'>;
+
+async function fetchFreeDictionary(lemmaWord: string): Promise<LookupBody | null> {
   const url = `https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(lemmaWord)}`;
   let res: Response;
   try {
@@ -293,7 +308,7 @@ async function translateDefinitionsToZh(
  *
  * 既然已经在调 LLM，顺手让它把 cn 字段一起填进去，省一次翻译往返。
  */
-async function llmLookup(lemmaWord: string): Promise<LookupResult> {
+async function llmLookup(lemmaWord: string): Promise<LookupBody> {
   const prompt = [
     `You are a lexicographer. Generate a brief bilingual dictionary entry for the English token "${lemmaWord}".`,
     'Respond with ONLY a JSON object — no prose, no markdown, no code fences.',
@@ -341,6 +356,7 @@ export async function lookupWord(input: string): Promise<LookupResult> {
     return {
       surfaceForm: input,
       lemma: input,
+      itemKey: `${input}#unknown`,
       partsOfSpeech: [],
       source: 'llm',
       estimated: true,
@@ -348,18 +364,23 @@ export async function lookupWord(input: string): Promise<LookupResult> {
   }
   const lemmaWord = resolveLemma(surfaceForm);
 
-  // 1) 缓存
+  // 1) 缓存（兼容旧条目：可能没 itemKey 字段，按 partsOfSpeech 现 derive）
   const cached = await db
     .select()
     .from(dictionaryEntries)
     .where(eq(dictionaryEntries.lemma, lemmaWord))
     .limit(1);
   if (cached.length > 0) {
-    const payload = cached[0].payload as Omit<LookupResult, 'surfaceForm' | 'source'>;
+    const payload = cached[0].payload as Partial<LookupResult>;
+    const partsOfSpeech = payload.partsOfSpeech ?? [];
     return {
-      ...payload,
+      ipa: payload.ipa,
+      audioUrl: payload.audioUrl,
+      partsOfSpeech,
+      estimated: payload.estimated,
       surfaceForm,
       lemma: lemmaWord,
+      itemKey: payload.itemKey ?? deriveItemKey(lemmaWord, partsOfSpeech),
       source: 'cache',
     };
   }
@@ -374,6 +395,7 @@ export async function lookupWord(input: string): Promise<LookupResult> {
       partsOfSpeech: bilingualPos,
       surfaceForm,
       lemma: lemmaWord,
+      itemKey: deriveItemKey(lemmaWord, bilingualPos),
     };
     await db
       .insert(dictionaryEntries)
@@ -384,7 +406,12 @@ export async function lookupWord(input: string): Promise<LookupResult> {
 
   // 3) LLM 兜底
   const llm = await llmLookup(lemmaWord);
-  const result: LookupResult = { ...llm, surfaceForm, lemma: lemmaWord };
+  const result: LookupResult = {
+    ...llm,
+    surfaceForm,
+    lemma: lemmaWord,
+    itemKey: deriveItemKey(lemmaWord, llm.partsOfSpeech),
+  };
   await db
     .insert(dictionaryEntries)
     .values({ lemma: lemmaWord, payload: result, source: 'llm' })

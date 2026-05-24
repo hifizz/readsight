@@ -93,7 +93,11 @@ export default function App() {
           )}
           {/* WordCard 只对单词选区出现；其他类型靠 Thread 里的 LLM 解读就够了。 */}
           {selection?.selection.type === 'word' && (
-            <WordCard surfaceForm={selection.selection.text} backendUrl={BACKEND} />
+            <WordCard
+              surfaceForm={selection.selection.text}
+              backendUrl={BACKEND}
+              selectionContext={selection}
+            />
           )}
 
           <main className="flex-1 overflow-hidden">
