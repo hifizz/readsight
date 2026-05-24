@@ -254,6 +254,9 @@ export async function translateBatch(texts: string[]): Promise<TranslateResult[]
 
   // 3) 回填 + 入缓存。translateWithFallback 返 SingleResult：
   //    string = 翻译成功；{ error } = 该段失败。失败段绝不入缓存。
+  //
+  //    防御：哪怕 LLM/SDK 返奇怪结构（曾出现过 [object Object] 入库的脏数据），
+  //    typeof === 'string' 检查能 100% 拦住非字符串污染缓存。
   const inserts: Array<typeof translations.$inferInsert> = [];
   for (let i = 0; i < miss.length; i++) {
     const m = miss[i];
@@ -267,11 +270,23 @@ export async function translateBatch(texts: string[]): Promise<TranslateResult[]
       };
       continue;
     }
-    results[m.index] = { original: m.text, zh: r, source: 'llm' };
+    // 二次防御：万一 SingleResult 类型被绕过，跑时再 stringify 检查一次
+    const zhStr: string = r;
+    if (!zhStr || zhStr.length === 0 || zhStr === '[object Object]') {
+      console.warn('[translate] suspect zh content blocked from cache:', JSON.stringify(r).slice(0, 100));
+      results[m.index] = {
+        original: m.text,
+        zh: '',
+        source: 'llm',
+        error: 'translation_failed',
+      };
+      continue;
+    }
+    results[m.index] = { original: m.text, zh: zhStr, source: 'llm' };
     inserts.push({
       hash: m.hash,
       originalText: m.text,
-      zh: r,
+      zh: zhStr,
       targetLang: TARGET_LANG,
       model: modelByIndex[i] || MODEL_LABEL_ZHIPU,
     });

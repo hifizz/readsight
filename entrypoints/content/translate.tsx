@@ -223,7 +223,10 @@ function injectTranslation(
   // 用 opacity 整体淡化，而不是硬编码颜色，dark mode 上白字也能正确变成"半透明白"。
   const inheritedColor = window.getComputedStyle(anchor).color || 'inherit';
 
-  if (result.error) {
+  // 防御：如果 result.zh 不是字符串（旧脏缓存 / LLM 异常），强制走 error 分支
+  const isBadZh =
+    !result.error && (typeof result.zh !== 'string' || result.zh === '[object Object]' || !result.zh);
+  if (result.error || isBadZh) {
     // 失败：低调灰色行内提示。中文不适合 italic，保持正体。
     node.setAttribute(
       'style',
@@ -237,38 +240,36 @@ function injectTranslation(
       ].join(';'),
     );
 
-    // content_filtered: 内容审查命中（智谱安全过滤等），重试也是死路 → 不挂重试按钮
-    if (result.error === 'content_filtered') {
-      const msg = document.createElement('span');
-      msg.textContent = '⛔ 内容审查拦截，该段无法翻译';
-      node.appendChild(msg);
-    } else {
-      // 其他可重试错误：网络 / token 截断 / GLM 临时抖动
-      const msg = document.createElement('span');
-      msg.textContent = '翻译未能完成 · ';
-      node.appendChild(msg);
+    // 提示文案按 error 类型选；所有情况都挂"重试"链接 —— 即便 content_filtered
+    // 也可能在 OpenRouter 兜底接通后第二次成功，给用户主动权
+    let prefixText = '翻译未能完成 · ';
+    if (result.error === 'content_filtered') prefixText = '⛔ 内容审查拦截 · ';
+    else if (isBadZh) prefixText = '⚠ 译文异常 · ';
 
-      const link = document.createElement('button');
-      link.type = 'button';
-      link.textContent = '重试';
-      link.setAttribute(
-        'style',
-        [
-          'background: transparent',
-          'border: 0',
-          'padding: 0',
-          'color: inherit',
-          'cursor: pointer',
-          'font: inherit',
-          'text-decoration: underline',
-          'text-underline-offset: 2px',
-        ].join(';'),
-      );
-      link.addEventListener('mouseenter', () => (link.style.opacity = '1'));
-      link.addEventListener('mouseleave', () => (link.style.opacity = ''));
-      link.addEventListener('click', onRetry);
-      node.appendChild(link);
-    }
+    const msg = document.createElement('span');
+    msg.textContent = prefixText;
+    node.appendChild(msg);
+
+    const link = document.createElement('button');
+    link.type = 'button';
+    link.textContent = '重试';
+    link.setAttribute(
+      'style',
+      [
+        'background: transparent',
+        'border: 0',
+        'padding: 0',
+        'color: inherit',
+        'cursor: pointer',
+        'font: inherit',
+        'text-decoration: underline',
+        'text-underline-offset: 2px',
+      ].join(';'),
+    );
+    link.addEventListener('mouseenter', () => (link.style.opacity = '1'));
+    link.addEventListener('mouseleave', () => (link.style.opacity = ''));
+    link.addEventListener('click', onRetry);
+    node.appendChild(link);
   } else {
     // 正常译文：继承原段落的实际颜色 + opacity 整体淡化区分
     node.setAttribute(
