@@ -29,8 +29,10 @@ const activelyQueriedLemmas = new Set<string>();
 const reportedPassiveLemmas = new Set<string>();
 
 export default defineContentScript({
-  // 本期只跑在 TechCrunch（PRD §2 在范围）。其他站点等"默认适配器"完工后再放开。
-  matches: ['*://techcrunch.com/*', '*://*.techcrunch.com/*'],
+  // 放开到所有 http(s) 站点：选区捕获 / 全文翻译 / 词典查询都是通用能力，
+  // PRD §3.2 "默认适配器"已隐式覆盖（无站点适配器时走 BLOCK_SELECTOR + Readability）。
+  // 隐私 trade-off：Chrome 安装时会提示"读取你访问的所有网站"。
+  matches: ['<all_urls>'],
   // 关键：WXT 把 CSS 注入到 shadow root 而不是宿主页面，做到样式互不污染（PRD §10）。
   cssInjectionMode: 'ui',
   async main(ctx) {
