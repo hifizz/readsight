@@ -29,28 +29,19 @@ GLM-4-Flash 已经在 M2 接好做翻译，中文母语 + 免费 + 快，复用�
 
 ---
 
-## Phase A — 后端 `/api/translate`
+## Phase A — 后端 `/api/translate` ✅
 
-- [ ] **A.1** schema 加 `translations` 表
-  - PK = sha256(model + targetLang + originalText)
-  - 列：hash text PK / original text / zh text / target_lang text / model text / created_at
-  - drizzle push 应用迁移
-  - 验证：`\dt` 看到 translations 表
-
-- [ ] **A.2** `server/src/lib/translate.ts` —— `translateBatch(blocks: string[]): Promise<Array<{ original, zh, source: 'cache'|'llm' }>>`
-  - 输入 N 段文本，先批量查 cache（IN 查询去重命中）
-  - 未命中的发 GLM-4-Flash 一次 LLM 调用翻译（重用 lib/zhipu.ts 的 zhipuFlash）
-  - 翻译结果回填 + 写库
-  - 用 undici fetch 绕开 Next.js fetch patch（M2 Phase CD 学到的坑）
-  - 验证：手测 5 段 mix（有 cache 有 miss）能正确返结果
-
-- [ ] **A.3** `POST /api/translate` 路由
-  - 入参：`{ blocks: [{ id: string; text: string }] }`
-  - 出参：`{ results: [{ id, zh, source, error? }] }` —— PRD §10 按块独立失败
-  - per-block try/catch：单块 LLM 失败不影响其他块；失败行带 `error` 字段
-  - 验证：curl 测 mixed batch；故意发空字符串看是否被过滤；故意发 hash 冲突看是否走 cache
-
-- [ ] **A.4** Smoke test：5 段英文一次 POST 看用时 + 命中率
+- [x] **A.1** ✓ schema 加 `translations` 表（hash PK + original_text + zh + target_lang + model + created_at），drizzle push 已应用
+- [x] **A.2** ✓ `server/src/lib/translate.ts`：translateBatch(texts) 主管道
+  - 批量 SELECT 查 cache（IN 查询）+ 短/标点字串跳过 LLM 原样返
+  - miss 段一次 Zhipu GLM-4-Flash 批量调用（JSON array in/out）
+  - Zhipu 失败 fallback MiniMax DEFAULT_MODEL_ID
+  - 翻译结果 onConflictDoNothing 写库
+- [x] **A.3** ✓ POST `/api/translate`：入参 `{blocks:[{id,text}]}` → 出参 `{results:[{id,zh,source,error?}]}`；上限 50 blocks；按 id 对齐响应
+- [x] **A.4** ✓ Smoke test：
+  - 第一次 4 段（2 长英文 + "a" + "123"）冷查 ~3s，2 写入缓存，2 短字串原样回
+  - 第二次同段 **48ms 命中 cache**
+  - 译文质量好（"60 million" → "6000万美元" 而非直译）
 
 ---
 

@@ -139,6 +139,27 @@ export type DictionaryEntryRow = typeof dictionaryEntries.$inferSelect;
 export type NewDictionaryEntryRow = typeof dictionaryEntries.$inferInsert;
 
 /**
+ * 全文翻译缓存（M3 PRD §7.1 全文双语对照用）。
+ *
+ * - PK = sha256(model + targetLang + originalText)：同段文本 + 同模型 +
+ *   同目标语 → 共享同一条缓存。同一篇文章重看、不同 URL 同段引用都命中。
+ * - originalText 存全文，便于排查 / 后续溯源；体积可接受（典型一段 100-300 字符）
+ * - target_lang 留扩展位（本期只 'zh-CN'）
+ * - model 存 LLM ID，迁移到新模型时旧缓存自然失效不污染
+ */
+export const translations = pgTable('translations', {
+  hash: text('hash').primaryKey(),
+  originalText: text('original_text').notNull(),
+  zh: text('zh').notNull(),
+  targetLang: text('target_lang').notNull(),
+  model: text('model').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type TranslationRow = typeof translations.$inferSelect;
+export type NewTranslationRow = typeof translations.$inferInsert;
+
+/**
  * TTS 缓存（PRD §6.3 Tier 2 句子精听 / 控成本）。
  *
  * - PK = sha256(text + voice + model)，文本可能很长不适合做 PK
