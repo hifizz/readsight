@@ -18,7 +18,9 @@ import { Languages, X } from 'lucide-react';
 import { Readability, isProbablyReaderable } from '@mozilla/readability';
 import type { BackgroundMessage, TranslationResult } from '@/lib/messaging';
 
-const BLOCK_SELECTOR = 'p, li, blockquote, h2, h3, h4, h5, h6, dd';
+const BLOCK_SELECTOR = 'p, li, blockquote, h1, h2, h3, h4, h5, h6, dd';
+/** 文章正文容器选择器 —— h1 / 内嵌 header 在这种容器内才豁免外部过滤 */
+const ARTICLE_ROOT_SELECTOR = 'article, main, [role="main"]';
 /** 内联标签：内容当作"代码 / 标识符"占位符发给 LLM，翻译完原样恢复 */
 const INLINE_PRESERVE_SELECTOR = 'code, kbd, samp, var, tt';
 /** 视口预测：上下 300px 提前进入翻译队列，用户滚动时已经翻译好可见 */
@@ -180,14 +182,21 @@ function extractArticleBlocks(): ArticleBlock[] {
   const blocks: ArticleBlock[] = [];
   for (const el of elements) {
     if (el.classList.contains(TRANSLATION_CLASS)) continue;
-    if (el.closest(EXCLUDE_ANCESTOR_SELECTOR)) continue;
+
+    // h1 标题特殊处理：Readability 把它单独抽到 article.title，不进 textContent；
+    // 很多站点又把 h1 包在 <article><header><h1></header>，被祖先黑名单连坐。
+    // 所以"在文章正文容器内的 h1"完全豁免所有过滤，标题永远入翻译队列。
+    const isArticleHeading =
+      el.tagName === 'H1' && el.closest(ARTICLE_ROOT_SELECTOR) !== null;
+
+    if (!isArticleHeading && el.closest(EXCLUDE_ANCESTOR_SELECTOR)) continue;
 
     const rawText = (el.textContent ?? '').trim();
     if (rawText.length < MIN_BLOCK_LENGTH) continue;
-    if (linkTextRatio(el) > 0.5) continue; // link-heavy = 导航类，跳过
+    if (linkTextRatio(el) > 0.5) continue;
 
-    // Readability 进一步过滤（如果跑成功）—— 用未占位的原文匹配
-    if (allow && !isInReadableArticle(el, allow)) continue;
+    // Readability sentence allowlist 过滤；h1 标题豁免（标题文本不在 textContent 里）
+    if (!isArticleHeading && allow && !isInReadableArticle(el, allow)) continue;
 
     // 走 DOM 抽出"带占位符"的文本：内联 <code>/<kbd>/... 内容替换成 ⟪Cn⟫
     const { text, restoreMap } = extractTextWithPreserves(el);
@@ -271,7 +280,10 @@ function injectTranslation(
     link.addEventListener('click', onRetry);
     node.appendChild(link);
   } else {
-    // 正常译文：继承原段落的实际颜色 + opacity 整体淡化区分
+    // 正常译文：继承原段落的实际颜色 + opacity 整体淡化区分。
+    // text-autospace: 中英文 / 中文数字之间自动加空格（CSS Text 4 新特性，
+    // Chrome 138+ 原生支持；旧浏览器静默忽略）—— 修复"内置工具Write/Edit"
+    // 这种贴在一起的视觉问题。-webkit- 前缀 + 标准属性双写覆盖更多版本。
     node.setAttribute(
       'style',
       [
@@ -282,6 +294,8 @@ function injectTranslation(
         'font-size: 0.95em !important',
         'font-weight: 300 !important',
         'line-height: 1.6 !important',
+        '-webkit-text-autospace: normal',
+        'text-autospace: normal',
       ].join(';'),
     );
     node.textContent = result.zh;
