@@ -200,7 +200,8 @@ function injectTranslation(
         'opacity: 0.65 !important',
         'font-family: inherit !important',
         'font-size: 0.95em !important',
-        'line-height: 1.55 !important',
+        'font-weight: 300 !important',
+        'line-height: 1.6 !important',
       ].join(';'),
     );
     node.textContent = result.zh;
