@@ -258,14 +258,21 @@ function SelectionPill() {
         e.stopPropagation();
       }}
       onClick={() => {
-        // 单词选区：记下 lemma，避免本会话再扫到时误报 passive_reencounter
-        if (ctx.selection.type === 'word') {
-          activelyQueriedLemmas.add(resolveLemma(ctx.selection.text));
+        // 单词选区：记下 lemma，避免本会话再扫到时误报 passive_reencounter。
+        // 防御：lemmatize 在 bundled 浏览器环境若异常，绝不能阻塞 sendMessage。
+        try {
+          if (ctx.selection.type === 'word') {
+            activelyQueriedLemmas.add(resolveLemma(ctx.selection.text));
+          }
+        } catch (err) {
+          console.warn('[english-agent] resolveLemma in pill click threw', err);
         }
         // 转发给 background。这里点击是真实用户手势，background 后续调用
         // chrome.sidePanel.open() 才能被允许。
         const msg: BackgroundMessage = { type: 'ASK_WITH_SELECTION', payload: ctx };
-        chrome.runtime.sendMessage(msg);
+        chrome.runtime.sendMessage(msg).catch((err) => {
+          console.warn('[english-agent] ASK_WITH_SELECTION send failed', err);
+        });
         setSnapshot(null);
       }}
       style={{

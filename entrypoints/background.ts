@@ -29,8 +29,6 @@ export default defineBackground(() => {
 
   chrome.runtime.onMessage.addListener((message: BackgroundMessage, sender, sendResponse) => {
     if (message.type === 'ASK_WITH_SELECTION') {
-      // 用 .then().catch() 而不是直接 await —— chrome.runtime.onMessage 监听器只
-      // 在返回 `true` 时才会等异步 sendResponse。
       handleAskWithSelection(message.payload, sender)
         .then(() => sendResponse({ ok: true }))
         .catch((err) => {
@@ -107,7 +105,7 @@ async function handleAskWithSelection(
 
   // 推给 sidepanel。如果 sidepanel 刚被 open 还没挂载完，listener 还没注册，
   // sendMessage 会抛 "Could not establish connection" —— 没关系，sidepanel
-  // 启动时也会主动读 session storage 兜底（lib/messaging 那条恢复路径）。
+  // 启动时也会主动读 session storage 兜底。
   const msg: BackgroundMessage = { type: 'SELECTION_READY', payload: ctx };
   try {
     await chrome.runtime.sendMessage(msg);
