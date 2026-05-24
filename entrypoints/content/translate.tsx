@@ -23,8 +23,12 @@ const BLOCK_SELECTOR = 'p, li, blockquote, h2, h3, h4, h5, h6, dd';
 const INLINE_PRESERVE_SELECTOR = 'code, kbd, samp, var, tt';
 /** 视口预测：上下 300px 提前进入翻译队列，用户滚动时已经翻译好可见 */
 const VIEWPORT_ROOT_MARGIN = '300px 0px 300px 0px';
-/** 并发上限：不要同时发太多 HTTP（Zhipu 速率 + 浏览器并发限制） */
-const MAX_CONCURRENT = 4;
+/** 一个 HTTP 请求最多带几段，让 server 一次 GLM 调用翻多段，降低 RPM */
+const MAX_BATCH_SIZE = 5;
+/** debounce：收到第一个块后等多久攒够同批，避免每次进来都立刻发 */
+const BATCH_DEBOUNCE_MS = 200;
+/** 同时在路上的 batch 上限，防止用户狂滚瞬间炸出 100 个 HTTP */
+const MAX_CONCURRENT_BATCHES = 3;
 const ROOT_SELECTOR_CANDIDATES = ['article', 'main', '[role="main"]'];
 /** 在这些祖先内的块直接跳过 —— 导航 / 边栏 / 页脚 / 相关阅读等噪声 */
 const EXCLUDE_ANCESTOR_SELECTOR = [
@@ -219,39 +223,43 @@ function injectTranslation(
   const inheritedColor = window.getComputedStyle(anchor).color || 'inherit';
 
   if (result.error) {
-    // 失败：红色高对比，浅色/暗色背景红字都可见
+    // 失败：低调灰色行内提示，链接式重试。不用红色避免视觉惊吓
     node.setAttribute(
       'style',
       [
         'margin: 4px 0 12px 0 !important',
-        'color: #ef4444 !important',
+        `color: ${inheritedColor} !important`,
+        'opacity: 0.45 !important',
         'font-family: inherit !important',
-        'font-size: 0.9em !important',
+        'font-size: 0.85em !important',
+        'font-style: italic !important',
         'line-height: 1.5 !important',
       ].join(';'),
     );
     const msg = document.createElement('span');
-    msg.textContent = `⚠ 翻译失败 (${result.error}) `;
+    msg.textContent = '翻译未能完成 · ';
     node.appendChild(msg);
 
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.textContent = '↻ 重试';
-    btn.setAttribute(
+    const link = document.createElement('button');
+    link.type = 'button';
+    link.textContent = '重试';
+    link.setAttribute(
       'style',
       [
         'background: transparent',
-        'border: 1px solid currentColor',
+        'border: 0',
+        'padding: 0',
         'color: inherit',
-        'padding: 1px 8px',
-        'border-radius: 3px',
         'cursor: pointer',
-        'font-size: 0.95em',
-        'margin-left: 4px',
+        'font: inherit',
+        'text-decoration: underline',
+        'text-underline-offset: 2px',
       ].join(';'),
     );
-    btn.addEventListener('click', onRetry);
-    node.appendChild(btn);
+    link.addEventListener('mouseenter', () => (link.style.opacity = '1'));
+    link.addEventListener('mouseleave', () => (link.style.opacity = ''));
+    link.addEventListener('click', onRetry);
+    node.appendChild(link);
   } else {
     // 正常译文：继承原段落的实际颜色 + opacity 整体淡化区分
     node.setAttribute(
@@ -332,8 +340,12 @@ interface OrchestratorCallbacks {
 class TranslationOrchestrator {
   private observer: IntersectionObserver | null = null;
   private blocks = new Map<string, RuntimeBlock>();
-  private pending: string[] = [];
-  private inFlight = new Set<string>();
+  /** 当前正在攒的 batch（满 MAX_BATCH_SIZE 或 debounce 到期就 flush） */
+  private pendingBatch: string[] = [];
+  private batchTimer: ReturnType<typeof setTimeout> | null = null;
+  /** 已经发出但还没回来的 batch 数；超过 MAX_CONCURRENT_BATCHES 时新 batch 排队 */
+  private inFlightBatches = 0;
+  private waitingForSlot: Array<string[]> = [];
   private callbacks: OrchestratorCallbacks | null = null;
 
   get isActive(): boolean {
@@ -368,68 +380,106 @@ class TranslationOrchestrator {
   stop(): void {
     this.observer?.disconnect();
     this.observer = null;
+    if (this.batchTimer) {
+      clearTimeout(this.batchTimer);
+      this.batchTimer = null;
+    }
     this.blocks.clear();
-    this.pending.length = 0;
-    this.inFlight.clear();
+    this.pendingBatch.length = 0;
+    this.waitingForSlot.length = 0;
+    this.inFlightBatches = 0;
     this.callbacks = null;
   }
 
+  /**
+   * 一个 block 进视口 → 攒进 pendingBatch。
+   * 满 MAX_BATCH_SIZE 立刻 flush；否则 debounce 200ms 等同伴一起。
+   */
   private enqueue(id: string): void {
     const block = this.blocks.get(id);
-    if (!block) return;
-    if (block.status !== 'idle') return; // pending / in-flight / done 都跳过
+    if (!block || block.status !== 'idle') return;
     block.status = 'pending';
-    this.pending.push(id);
-    this.pump();
-  }
+    this.pendingBatch.push(id);
 
-  private pump(): void {
-    while (this.inFlight.size < MAX_CONCURRENT && this.pending.length > 0) {
-      const id = this.pending.shift();
-      if (!id) break;
-      this.inFlight.add(id);
-      void this.translateOne(id).finally(() => {
-        this.inFlight.delete(id);
-        this.pump();
-      });
+    // 攒满了直接 flush，不再等 debounce
+    while (this.pendingBatch.length >= MAX_BATCH_SIZE) {
+      const slice = this.pendingBatch.splice(0, MAX_BATCH_SIZE);
+      this.dispatchBatch(slice);
+    }
+
+    // 还有零头：启动 / 重置 debounce timer
+    if (this.pendingBatch.length > 0) {
+      if (this.batchTimer) clearTimeout(this.batchTimer);
+      this.batchTimer = setTimeout(() => this.flushPending(), BATCH_DEBOUNCE_MS);
     }
   }
 
-  private async translateOne(id: string): Promise<void> {
-    const block = this.blocks.get(id);
-    if (!block) return;
-    block.status = 'translating';
+  private flushPending(): void {
+    this.batchTimer = null;
+    if (this.pendingBatch.length === 0) return;
+    const slice = this.pendingBatch.splice(0);
+    this.dispatchBatch(slice);
+  }
+
+  /**
+   * 把一个完整 batch 派发 —— 当前 inFlight 名额不够就先排队。
+   * 顺序按"先到先发"，简单的 FIFO。
+   */
+  private dispatchBatch(ids: string[]): void {
+    if (this.inFlightBatches >= MAX_CONCURRENT_BATCHES) {
+      this.waitingForSlot.push(ids);
+      return;
+    }
+    this.inFlightBatches++;
+    void this.translateBatch(ids).finally(() => {
+      this.inFlightBatches--;
+      // 释放后看看有没有等着的 batch
+      const next = this.waitingForSlot.shift();
+      if (next) this.dispatchBatch(next);
+    });
+  }
+
+  private async translateBatch(ids: string[]): Promise<void> {
+    for (const id of ids) {
+      const b = this.blocks.get(id);
+      if (b) b.status = 'translating';
+    }
+    const blocksForServer = ids.map((id) => {
+      const b = this.blocks.get(id);
+      return { id, text: b?.text ?? '' };
+    });
     try {
-      const results = await translateBatchViaBackground([{ id, text: block.text }]);
-      const r = results[0];
-      if (!r) {
+      const results = await translateBatchViaBackground(blocksForServer);
+      for (const r of results) {
+        const block = this.blocks.get(r.id);
+        if (!block) continue;
+        const restored: TranslationResult = r.zh
+          ? { ...r, zh: restorePreserves(r.zh, block.restoreMap) }
+          : r;
+        injectTranslation(block.element, restored, () => this.retry(r.id));
+        block.status = r.error ? 'error' : 'done';
+        this.callbacks?.onProgress();
+      }
+    } catch (err) {
+      console.warn('[english-agent] batch translate failed', err);
+      for (const id of ids) {
+        const block = this.blocks.get(id);
+        if (!block) continue;
+        injectTranslation(
+          block.element,
+          { id, zh: '', source: 'llm', error: String(err) },
+          () => this.retry(id),
+        );
         block.status = 'error';
         this.callbacks?.onProgress();
-        return;
       }
-      const restored: TranslationResult = r.zh
-        ? { ...r, zh: restorePreserves(r.zh, block.restoreMap) }
-        : r;
-      injectTranslation(block.element, restored, () => this.retry(id));
-      block.status = r.error ? 'error' : 'done';
-    } catch (err) {
-      console.warn('[english-agent] translateOne failed', err);
-      injectTranslation(
-        block.element,
-        { id, zh: '', source: 'llm', error: String(err) },
-        () => this.retry(id),
-      );
-      block.status = 'error';
-    } finally {
-      this.callbacks?.onProgress();
     }
   }
 
-  /** 单 block 重试（错误状态点击"重试"按钮触发） */
-  private async retry(id: string): Promise<void> {
+  /** 单 block 重试（错误状态点击"重试"链接触发） */
+  private retry(id: string): void {
     const block = this.blocks.get(id);
     if (!block) return;
-    // 状态回 idle 再走 enqueue 复用并发队列
     block.status = 'idle';
     this.enqueue(id);
   }
