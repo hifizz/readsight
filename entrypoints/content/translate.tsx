@@ -232,18 +232,24 @@ function extractArticleBlocks(
     // SPA 整树 re-render 时缓存的 article 节点可能被换掉（detached），
     // 此时 querySelectorAll 拉不到新内容。重新定位 root；但仍跳过 Readability 重判定。
     const refreshed = findArticleRoot();
-    if (process.env.NODE_ENV !== 'production') {
-      console.log(
-        '[english-agent] rescan: cachedArticleRoot detached, refreshing',
-        { old: cachedArticleRoot, new: refreshed },
-      );
-    }
+    console.log(
+      '[english-agent] rescan: cachedArticleRoot detached, refreshing',
+      { old: cachedArticleRoot?.tagName, new: refreshed?.tagName },
+    );
     cachedArticleRoot = refreshed;
   }
   const root = cachedArticleRoot ?? findArticleRoot();
-  // Rescan 不再用 Readability 过滤 —— 新内容默认算正文（信任初始 root 判定）
-  const allow = isRescan ? null : cachedReadabilityAllow;
 
+  // Rescan 走 text-walker：BLOCK_SELECTOR 只看 p/li/h*，对 React SPA 用
+  // <div> 当段落的站点完全抓不到新内容。text-walker 兜任意标签 +
+  // EXCLUDE_ANCESTOR_SELECTOR 把 nav/aside/footer 仍排除，结果是
+  // "article root 内除噪音容器之外的所有 block-like 元素"。
+  if (isRescan) {
+    return extractPageBlocks(root, EXCLUDE_ANCESTOR_SELECTOR, MIN_BLOCK_LENGTH);
+  }
+
+  // 初始扫：BLOCK_SELECTOR + Readability allowlist 严格路径（保持精读体验）
+  const allow = cachedReadabilityAllow;
   const elements = Array.from(root.querySelectorAll<HTMLElement>(BLOCK_SELECTOR));
   const blocks: ArticleBlock[] = [];
   for (const el of elements) {
@@ -279,16 +285,20 @@ function extractArticleBlocks(
  * 这两条规则在 sibling 顺序混合（"内层 div + 外层 li 直接文本"）的奇怪
  * 结构上仍可能丢字，但实际页面极少这样写。够用。
  */
-function extractPageBlocks(): ArticleBlock[] {
+function extractPageBlocks(
+  root: HTMLElement = document.body,
+  extraExcludeSelector?: string,
+  minLen: number = MIN_BLOCK_LENGTH_PAGE,
+): ArticleBlock[] {
   const units = new Set<HTMLElement>();
-  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   let node: Node | null;
   while ((node = walker.nextNode())) {
     const text = node.nodeValue ?? '';
     if (text.trim().length < 2) continue;
     let cur: HTMLElement | null = (node as Text).parentElement;
     let unit: HTMLElement | null = null;
-    while (cur && cur !== document.body) {
+    while (cur && cur !== root && cur !== document.body) {
       if (PAGE_BLOCK_TAGS.has(cur.tagName)) {
         unit = cur;
         break;
@@ -297,6 +307,7 @@ function extractPageBlocks(): ArticleBlock[] {
     }
     if (!unit) continue;
     if (unit.closest(PAGE_MODE_HARD_EXCLUDE)) continue;
+    if (extraExcludeSelector && unit.closest(extraExcludeSelector)) continue;
     if (unit.classList.contains(TRANSLATION_CLASS)) continue;
 
     // 祖先已在集合里 —— 已被外层覆盖，跳过
@@ -321,9 +332,9 @@ function extractPageBlocks(): ArticleBlock[] {
   const blocks: ArticleBlock[] = [];
   for (const unit of units) {
     const rawText = (unit.textContent ?? '').trim();
-    if (rawText.length < MIN_BLOCK_LENGTH_PAGE) continue;
+    if (rawText.length < minLen) continue;
     const { text, restoreMap } = extractTextWithPreserves(unit);
-    if (text.length < MIN_BLOCK_LENGTH_PAGE) continue;
+    if (text.length < minLen) continue;
     const id = unit.getAttribute(BLOCK_ID_ATTR) ?? crypto.randomUUID();
     unit.setAttribute(BLOCK_ID_ATTR, id);
     blocks.push({ id, element: unit, text, restoreMap });
@@ -788,11 +799,9 @@ function rescanForNewBlocks(mode: TranslateMode): void {
   // 的段落经常通不过 Readability 的飘忽启发式，无法续翻。
   const all = extractArticleBlocks(mode, true);
   const added = orchestrator.addBlocks(all);
-  if (process.env.NODE_ENV !== 'production') {
-    console.log(
-      `[english-agent] rescan(${mode}): scanned=${all.length}, added=${added}, total=${orchestrator.totalCount}`,
-    );
-  }
+  console.log(
+    `[english-agent] rescan(${mode}): scanned=${all.length}, added=${added}, total=${orchestrator.totalCount}`,
+  );
   if (added > 0) {
     setModuleState({ ...moduleState, total: orchestrator.totalCount });
   }

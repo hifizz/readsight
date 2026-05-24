@@ -39,3 +39,4 @@ server/drizzle/meta
 *.njsproj
 *.sln
 *.sw?
+.gstack/
