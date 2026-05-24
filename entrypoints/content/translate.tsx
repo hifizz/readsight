@@ -51,7 +51,8 @@ const EXCLUDE_ANCESTOR_SELECTOR = [
   '.newsletter',
 ].join(',');
 const MIN_BLOCK_LENGTH = 30;
-const BATCH_TIMEOUT_MS = 12_000;
+// 单 batch 翻 5 段时 GLM 端 ~5-15s，加网络往返；给到 25s 保留余量。
+const BATCH_TIMEOUT_MS = 25_000;
 const TRANSLATION_CLASS = 'english-agent-translation';
 const BLOCK_ID_ATTR = 'data-eag-id';
 
@@ -223,7 +224,8 @@ function injectTranslation(
   const inheritedColor = window.getComputedStyle(anchor).color || 'inherit';
 
   if (result.error) {
-    // 失败：低调灰色行内提示，链接式重试。不用红色避免视觉惊吓
+    // 失败：低调灰色行内提示，链接式重试。不用红色避免视觉惊吓。
+    // 中文不适合 italic（看着别扭），保持正体。
     node.setAttribute(
       'style',
       [
@@ -232,7 +234,6 @@ function injectTranslation(
         'opacity: 0.45 !important',
         'font-family: inherit !important',
         'font-size: 0.85em !important',
-        'font-style: italic !important',
         'line-height: 1.5 !important',
       ].join(';'),
     );

@@ -73,8 +73,9 @@ async function callLLMBatch(
   const result = await generateText({
     model,
     prompt,
-    // GLM-4-Flash 非推理模型，输出快；按 5 段 × 300 字符算 max 1500 token 输出
-    maxOutputTokens: 2500,
+    // GLM-4-Flash 非推理模型；5 段长 paragraph (~300 字符 / 段) 中文输出可达
+    // ~2500 tokens。给到 4000 留余量避免截断 JSON。
+    maxOutputTokens: 4000,
   });
   const text = result.text;
   const start = text.indexOf('[');
@@ -100,6 +101,47 @@ async function callLLMBatch(
     console.warn(`[translate] ${modelLabel}: JSON.parse threw`, err);
     return null;
   }
+}
+
+/**
+ * Divide-and-conquer 兜底：
+ *   - 一把跑整批，成功就返结果
+ *   - 失败时拆成左右两半递归；单段还失败 → 该段位置返空串（让外层标 error）
+ * 这样个别段 token 截断 / 单段 GLM 配额抖动不再殃及全批。
+ *
+ * 返回值跟 texts 等长；对应位置为 '' 表示翻译失败。
+ */
+async function translateWithFallback(
+  texts: string[],
+  model: LanguageModel,
+): Promise<string[] | null> {
+  if (texts.length === 0) return [];
+
+  // 整批先试一把
+  try {
+    const arr = await callLLMBatch(texts, model, MODEL_LABEL_ZHIPU);
+    if (arr) return arr;
+  } catch (err) {
+    console.warn(`[translate] batch(${texts.length}) threw:`, err instanceof Error ? err.message : err);
+  }
+
+  // 整批失败：单段直接返 null 让外层标 error
+  if (texts.length === 1) return null;
+
+  // 拆半递归
+  const mid = Math.floor(texts.length / 2);
+  const [left, right] = await Promise.all([
+    translateWithFallback(texts.slice(0, mid), model),
+    translateWithFallback(texts.slice(mid), model),
+  ]);
+  // 合并：对应位置缺失（null）的用空串占位，由外层标 error
+  const merged: string[] = [];
+  for (let i = 0; i < texts.length; i++) {
+    const arr = i < mid ? left : right;
+    const idx = i < mid ? i : i - mid;
+    merged.push(arr?.[idx] ?? '');
+  }
+  return merged;
 }
 
 /**
@@ -162,15 +204,10 @@ export async function translateBatch(texts: string[]): Promise<TranslateResult[]
     }
     return results;
   }
-  let translated: string[] | null = null;
-  try {
-    translated = await callLLMBatch(miss.map((m) => m.text), zhipuFlash, MODEL_LABEL_ZHIPU);
-  } catch (err) {
-    console.warn(`[translate] zhipu threw:`, err instanceof Error ? err.message : err);
-  }
-
+  // 翻译入口：先按整批跑；失败则 divide-and-conquer 拆半递归，
+  // 单段还失败才真返 error。这样 1/5 段 token 截断 / RPM 撞墙不再殃及整批。
+  const translated = await translateWithFallback(miss.map((m) => m.text), zhipuFlash);
   if (!translated) {
-    // 整批失败：把 miss 全部标 error，前端会挂 retry 按钮
     for (const m of miss) {
       results[m.index] = {
         original: m.text,
@@ -182,11 +219,21 @@ export async function translateBatch(texts: string[]): Promise<TranslateResult[]
     return results;
   }
 
-  // 3) 回填 + 入缓存
+  // 3) 回填 + 入缓存。divide-and-conquer 返空串表示该段单独失败；
+  //    标 error 让前端挂"重试"，并且空译文绝不入缓存。
   const inserts: Array<typeof translations.$inferInsert> = [];
   for (let i = 0; i < miss.length; i++) {
     const m = miss[i];
     const zh = translated[i];
+    if (!zh) {
+      results[m.index] = {
+        original: m.text,
+        zh: '',
+        source: 'llm',
+        error: 'translation_failed',
+      };
+      continue;
+    }
     results[m.index] = { original: m.text, zh, source: 'llm' };
     inserts.push({
       hash: m.hash,
