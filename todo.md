@@ -6,6 +6,24 @@
 
 ---
 
+## Round 3 — 单词专用查询路径（PRD §6.2/§6.3 落地）
+
+- [x] **R3.1** ✓ 后端 `pnpm add wink-lemmatizer` + 自写 `server/src/types/wink-lemmatizer.d.ts`（registry 无 @types/...）
+- [x] **R3.2** ✓ schema 加 `dictionary_entries`（PK=lemma，jsonb payload）；`drizzle-kit push --force` 已应用
+- [x] **R3.3** ✓ `lib/messaging.ts` 加共享 `LookupResult` 类型；`server/src/lib/lookup.ts` 重复定义同形（避免跨包导入）
+- [x] **R3.4** ✓ `server/src/lib/lookup.ts` 主管道：normalize → wink lemmatize → DB 缓存 → Free Dictionary API → MiniMax 兜底（estimated:true）。POS 上限 4，每 POS 定义上限 2，防 WordCard 撑爆
+- [x] **R3.5** ✓ `server/src/app/api/lookup/route.ts` GET 路由 + OPTIONS 预检
+- [x] **R3.6** ✓ `server/src/app/api/chat/route.ts` system prompt 按 `selection.type` 分支：word → 专注语境化用法（避开字典义）；其他 → 原 PRD §6.1 路径
+- [x] **R3.7** ✓ `components/word-card.tsx`：IPA + 真人音频按钮（tier 1，失败回退 SpeechSynthesis tier 0）+ POS 分块定义 + estimated badge + 过期请求丢弃机制
+- [x] **R3.8** ✓ sidepanel App.tsx：`selection.type === 'word'` 时挂 WordCard 在 ContextCard 和 Thread 之间
+- [x] **R3.9** ✓ smoke test：`outed → out`、`studies → study`、`outing` 命中 cache —— 全部 200 OK，lemma 共享缓存生效
+
+**新发现 / 已知问题**：
+- Free Dictionary 对"out" / "set" 这种超高频词会返 7+ POS。后端已经合并同名 POS、上限 4，cache 写入也是已过滤后的形态。如果用户报某个词词性少了，可以放宽到 6。
+- LLM 兜底用的是 `generateText` + 手动 JSON 解析，没用 `generateObject`，避免 vercel-minimax-ai-provider 对结构化输出 schema 支持不全踩坑。
+
+---
+
 ## Round 2 — 划词捕获 → sidepanel 注入语境（用户选 option 3 后追加）
 
 - [x] **R2.1** ✓ 新建 `lib/messaging.ts`：跨 context 共享的 `SelectionContext` 类型 + `BackgroundMessage` 联合类型（`ASK_WITH_SELECTION` / `SELECTION_READY`）

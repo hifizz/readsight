@@ -24,6 +24,7 @@ import { History, X } from 'lucide-react';
 import type { BackgroundMessage, SelectionContext } from '@/lib/messaging';
 import { Thread } from '@/components/assistant-ui/thread';
 import { ThreadList } from '@/components/assistant-ui/thread-list';
+import { WordCard } from '@/components/word-card';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -88,6 +89,10 @@ export default function App() {
 
           {selection && (
             <ContextCard ctx={selection} onClear={() => setSelection(null)} />
+          )}
+          {/* WordCard 只对单词选区出现；其他类型靠 Thread 里的 LLM 解读就够了。 */}
+          {selection?.selection.type === 'word' && (
+            <WordCard surfaceForm={selection.selection.text} backendUrl={BACKEND} />
           )}
 
           <main className="flex-1 overflow-hidden">

@@ -116,6 +116,25 @@ export const chatMessages = pgTable(
   (t) => [index('chat_messages_thread_id_idx').on(t.threadId)],
 );
 
+/**
+ * Free Dictionary API 命中 / LLM 兜底生成的词典条目缓存。
+ *
+ * - PK 走 lemma（不是 surfaceForm）：用户选 "outed" / "outing" / "outs"
+ *   会被 wink-lemmatizer 都还原成 "out"，共享同一条缓存。
+ * - payload jsonb 直接存返回给前端 WordCard 的 LookupPayload，少做反序列化。
+ * - source 标来源：`free-dictionary` / `llm` / `cache` —— 让 UI 在 LLM 兜底
+ *   时显示 "estimated" 标记，对应 PRD §6.2 的"不让 AI 当主力"原则。
+ */
+export const dictionaryEntries = pgTable('dictionary_entries', {
+  lemma: text('lemma').primaryKey(),
+  payload: jsonb('payload').notNull(),
+  source: text('source').notNull(),
+  cachedAt: timestamp('cached_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type DictionaryEntryRow = typeof dictionaryEntries.$inferSelect;
+export type NewDictionaryEntryRow = typeof dictionaryEntries.$inferInsert;
+
 export type SelectionContextRow = typeof selectionContexts.$inferSelect;
 export type NewSelectionContextRow = typeof selectionContexts.$inferInsert;
 export type EncounterEventRow = typeof encounterEvents.$inferSelect;

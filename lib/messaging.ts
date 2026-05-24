@@ -31,3 +31,26 @@ export interface SelectionContext {
 export type BackgroundMessage =
   | { type: 'ASK_WITH_SELECTION'; payload: SelectionContext }
   | { type: 'SELECTION_READY'; payload: SelectionContext };
+
+/**
+ * `/api/lookup` 返回结构。前端 WordCard 直接吃这个 shape；后端缓存表也存这个。
+ *
+ * - surfaceForm: 用户实际选中的形态（"outed"）
+ * - lemma: 经过 wink-lemmatizer 还原的字典原形（"out"）
+ * - ipa: IPA 音标，分美式英式两版（词典源若只提供一种就缺一项）
+ * - audioUrl: 真人音频，PRD §6.3 tier 1；前端 fallback 到 SpeechSynthesis (tier 0)
+ * - partsOfSpeech: 一个词可能有多种词性（"run" 是动词也是名词），每种带定义 + 例句
+ * - source / estimated: 来源透明，LLM 兜底时 estimated=true（PRD §6.2）
+ */
+export interface LookupResult {
+  surfaceForm: string;
+  lemma: string;
+  ipa?: { us?: string; uk?: string };
+  audioUrl?: string;
+  partsOfSpeech: Array<{
+    pos: string;
+    definitions: Array<{ definition: string; example?: string }>;
+  }>;
+  source: 'cache' | 'free-dictionary' | 'llm';
+  estimated?: boolean;
+}
