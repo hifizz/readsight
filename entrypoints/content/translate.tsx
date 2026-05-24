@@ -25,12 +25,16 @@ const ARTICLE_ROOT_SELECTOR = 'article, main, [role="main"]';
 const INLINE_PRESERVE_SELECTOR = 'code, kbd, samp, var, tt';
 /** 视口预测：上下 300px 提前进入翻译队列，用户滚动时已经翻译好可见 */
 const VIEWPORT_ROOT_MARGIN = '300px 0px 300px 0px';
-/** 一个 HTTP 请求最多带几段，让 server 一次 GLM 调用翻多段，降低 RPM */
-const MAX_BATCH_SIZE = 5;
+/**
+ * 一个 HTTP 请求最多带几段。
+ * DeepSeek 主翻 1-2s 出整批 5 段，可以放大到 12 段（仍在 6000 maxOutputTokens
+ * 预算内：12 × ~250 tokens 中文 ≈ 3000 + JSON 框架）。GLM 时代是 5。
+ */
+const MAX_BATCH_SIZE = 12;
 /** debounce：收到第一个块后等多久攒够同批，避免每次进来都立刻发 */
-const BATCH_DEBOUNCE_MS = 200;
-/** 同时在路上的 batch 上限，防止用户狂滚瞬间炸出 100 个 HTTP */
-const MAX_CONCURRENT_BATCHES = 3;
+const BATCH_DEBOUNCE_MS = 150;
+/** 同时在路上的 batch 上限。DeepSeek 配额比 GLM free 大很多，放到 4 */
+const MAX_CONCURRENT_BATCHES = 4;
 const ROOT_SELECTOR_CANDIDATES = ['article', 'main', '[role="main"]'];
 /** 在这些祖先内的块直接跳过 —— 导航 / 边栏 / 页脚 / 相关阅读等噪声 */
 const EXCLUDE_ANCESTOR_SELECTOR = [
@@ -53,8 +57,8 @@ const EXCLUDE_ANCESTOR_SELECTOR = [
   '.newsletter',
 ].join(',');
 const MIN_BLOCK_LENGTH = 30;
-// 单 batch 翻 5 段时 GLM 端 ~5-15s，加网络往返；给到 25s 保留余量。
-const BATCH_TIMEOUT_MS = 25_000;
+// DeepSeek 翻 12 段 ~2-4s + 网络；30s 给足重试 / 兜底链余量。
+const BATCH_TIMEOUT_MS = 30_000;
 const TRANSLATION_CLASS = 'english-agent-translation';
 const BLOCK_ID_ATTR = 'data-eag-id';
 
