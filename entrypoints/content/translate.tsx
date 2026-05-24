@@ -432,37 +432,46 @@ class TranslationOrchestrator {
     this.batchTimer = setTimeout(() => this.flushPending(), BATCH_DEBOUNCE_MS);
   }
 
-  /** 按块中心到当前视口中心的距离做优先级；越近越先翻。 */
-  private distanceFromViewport(id: string): number {
-    const b = this.blocks.get(id);
-    if (!b) return Infinity;
-    const rect = b.element.getBoundingClientRect();
-    const blockCenterY = rect.top + rect.height / 2; // viewport 坐标，scroll 已包含
-    const viewportCenterY = window.innerHeight / 2;
-    return Math.abs(blockCenterY - viewportCenterY);
-  }
-
+  /**
+   * flushPending 时一次性算所有块到视口中心的距离，sort 阶段只查 Map 不再
+   * 调 rect —— 浏览器在中途没 DOM 写入时只算一次 layout，**reflow 风险从
+   * O(N) 降到 O(1)**。
+   */
   private flushPending(): void {
     this.batchTimer = null;
     if (this.pendingBatch.length === 0) return;
 
-    // 按视口距离重排：离视口越近的先出队
+    // Pass 1: 一次性读所有 rect，缓存距离。layout 此刻只算一次。
+    const viewportCenterY = window.innerHeight / 2;
+    const distance = new Map<string, number>();
+    for (const id of this.pendingBatch) {
+      const b = this.blocks.get(id);
+      if (!b) {
+        distance.set(id, Infinity);
+        continue;
+      }
+      const rect = b.element.getBoundingClientRect();
+      distance.set(id, Math.abs(rect.top + rect.height / 2 - viewportCenterY));
+    }
+
+    // Pass 2: 按缓存距离排序（不再调 rect）
     const sorted = [...this.pendingBatch].sort(
-      (a, b) => this.distanceFromViewport(a) - this.distanceFromViewport(b),
+      (a, b) => (distance.get(a) ?? Infinity) - (distance.get(b) ?? Infinity),
     );
     this.pendingBatch.length = 0;
 
-    // 切成 MAX_BATCH_SIZE 一组的多个 batch；视口最近的整批先发
     for (let i = 0; i < sorted.length; i += MAX_BATCH_SIZE) {
       this.dispatchBatch(sorted.slice(i, i + MAX_BATCH_SIZE));
     }
   }
 
   /**
-   * 把一个完整 batch 派发 —— 当前 inFlight 名额不够就先排队。
+   * 派发 batch；inFlight 名额满了就 FIFO 排队。
    *
-   * slot 释放时不再 FIFO，而是按"批内最近视口距离"重新挑下一批 ——
-   * 用户在等待期间继续滚动，新进队的视口块能跳过老的"已滚过"批次。
+   * 这里**故意不**在 slot 释放时重排 waitingForSlot —— flushPending 阶段
+   * 已经把当下 pendingBatch 按视口排好序了，dispatch 顺序对就够。"翻译中
+   * 持续滚动重排 waiting"那种 corner case 收益太小，O(N²) + 多次 rect 调
+   * 不划算。
    */
   private dispatchBatch(ids: string[]): void {
     if (this.inFlightBatches >= MAX_CONCURRENT_BATCHES) {
@@ -472,26 +481,8 @@ class TranslationOrchestrator {
     this.inFlightBatches++;
     void this.translateBatch(ids).finally(() => {
       this.inFlightBatches--;
-      // 当前所有 waiting batch 里挑离视口最近的一批先发
-      if (this.waitingForSlot.length > 0) {
-        let bestIdx = 0;
-        let bestDist = Infinity;
-        for (let i = 0; i < this.waitingForSlot.length; i++) {
-          const batch = this.waitingForSlot[i];
-          // batch 内任一块的最近距离作为该批优先级
-          let minDist = Infinity;
-          for (const id of batch) {
-            const d = this.distanceFromViewport(id);
-            if (d < minDist) minDist = d;
-          }
-          if (minDist < bestDist) {
-            bestDist = minDist;
-            bestIdx = i;
-          }
-        }
-        const next = this.waitingForSlot.splice(bestIdx, 1)[0];
-        this.dispatchBatch(next);
-      }
+      const next = this.waitingForSlot.shift();
+      if (next) this.dispatchBatch(next);
     });
   }
 
