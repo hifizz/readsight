@@ -16,7 +16,8 @@
  * 用 undici fetch 绕开 Next.js Turbopack 的 fetch patch（M2 lookup 学到的坑）。
  */
 import crypto from 'node:crypto';
-import { generateText, type LanguageModel } from 'ai';
+import { generateObject, type LanguageModel } from 'ai';
+import { z } from 'zod';
 import { inArray } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { translations } from '@/db/schema';
@@ -99,63 +100,69 @@ function shouldSkip(text: string): boolean {
 
 /**
  * 调一次 LLM 批量翻译。失败抛错由上层捕获。
+ *
+ * 用 generateObject + Zod schema 走 provider 的 JSON-mode 强约束
+ * （OpenAI-compatible `response_format: { type: "json_object" }`）。
+ * 这把以前手写 `JSON.parse(text.slice('[',']'))` 的脆弱解析换掉 ——
+ * 之前的失败模式：模型在 string 内部用没转义的 `"` 或中英混排标点
+ * 会把第一道 `[` / 最后一道 `]` 之间的子串切坏。
+ *
+ * Schema 用包一层 `{ translations: [...] }`，因为 OpenAI json_object 模式
+ * 要求顶层是 object，不接 array。
  */
+const TranslationsSchema = z.object({
+  translations: z.array(z.string()),
+});
+
 async function callLLMBatch(
   texts: string[],
   model: LanguageModel,
   modelLabel: string,
 ): Promise<string[] | null> {
-  const prompt = [
-    'You translate English text into natural, fluent Simplified Chinese.',
-    'Preserve tone, paragraph structure, and any technical terms (keep brand names / acronyms as-is).',
-    'Do NOT translate code snippets, URLs, or numbers.',
-    '',
-    'Rules:',
-    '- Each output gloss should read like native Chinese writing, not literal word-for-word.',
-    '- Keep paragraph length proportionate to the original.',
-    '- Do NOT add commentary, prefixes, or numbering.',
-    '- CRITICAL: Preserve any token matching the pattern ⟪C followed by digits then ⟫ (e.g. ⟪C1⟫, ⟪C2⟫) EXACTLY as-is. These are placeholders for code identifiers — never translate or modify them. Keep them in the natural position they would occupy in the Chinese sentence.',
-    '',
-    `Input (JSON array of ${texts.length} English paragraphs):`,
-    JSON.stringify(texts),
-    '',
-    `Output: ONLY a JSON array of exactly ${texts.length} Chinese strings, parallel-indexed. No prose, no code fences.`,
-  ].join('\n');
-
   const t0 = Date.now();
-  const result = await generateText({
-    model,
-    prompt,
-    // GLM-4-Flash 偶发会在 finish=stop 时漏掉 JSON 闭合 ] 或元素间逗号。
-    // 给到 6000 缓解截断；与速度无关（GLM 非推理）。
-    maxOutputTokens: 6000,
-  });
-  const elapsed = Date.now() - t0;
-  console.log(`[translate] ${modelLabel} batch(${texts.length}) → ${elapsed}ms, finish=${result.finishReason}`);
-  const text = result.text;
-  const start = text.indexOf('[');
-  const end = text.lastIndexOf(']');
-  if (start < 0 || end <= start) {
-    console.warn(`[translate] ${modelLabel}: no JSON array, finish=${result.finishReason}, raw=${text.slice(0, 200)}`);
-    return null;
-  }
+  let object: z.infer<typeof TranslationsSchema>;
+  let finishReason: string | undefined;
   try {
-    const arr = JSON.parse(text.slice(start, end + 1)) as unknown;
-    if (
-      !Array.isArray(arr) ||
-      arr.length !== texts.length ||
-      !arr.every((s) => typeof s === 'string')
-    ) {
-      console.warn(
-        `[translate] ${modelLabel}: shape mismatch, got=${Array.isArray(arr) ? arr.length : 'non-array'}, expected=${texts.length}`,
-      );
-      return null;
-    }
-    return arr as string[];
+    const result = await generateObject({
+      model,
+      schema: TranslationsSchema,
+      // 提示词留"JSON"字样 —— DeepSeek json_object 模式硬要求 prompt 含 "json"。
+      prompt: [
+        'Translate the English paragraphs below into natural, fluent Simplified Chinese.',
+        'Preserve tone, paragraph structure, and technical terms (keep brand names / acronyms as-is).',
+        'Do NOT translate code snippets, URLs, or numbers.',
+        '',
+        'Rules:',
+        '- Read like native Chinese writing, not literal word-for-word.',
+        '- Keep paragraph length proportionate to the original.',
+        '- No commentary, no prefixes, no numbering.',
+        '- CRITICAL: Preserve any token matching ⟪C<digits>⟫ (e.g. ⟪C1⟫, ⟪C2⟫) EXACTLY as-is — these are code placeholders.',
+        '',
+        `Input (${texts.length} English paragraphs, parallel-indexed):`,
+        JSON.stringify(texts),
+        '',
+        `Return a JSON object: { "translations": [<${texts.length} Chinese strings>] }`,
+      ].join('\n'),
+      maxOutputTokens: 6000,
+    });
+    object = result.object;
+    finishReason = result.finishReason;
   } catch (err) {
-    console.warn(`[translate] ${modelLabel}: JSON.parse threw`, err);
+    console.warn(`[translate] ${modelLabel} generateObject threw:`, err);
+    throw err; // 让 translateWithFallback 兜底
+  }
+  const elapsed = Date.now() - t0;
+  console.log(
+    `[translate] ${modelLabel} batch(${texts.length}) → ${elapsed}ms, finish=${finishReason}`,
+  );
+  const arr = object.translations;
+  if (arr.length !== texts.length) {
+    console.warn(
+      `[translate] ${modelLabel}: shape mismatch, got=${arr.length}, expected=${texts.length}`,
+    );
     return null;
   }
+  return arr;
 }
 
 type ErrorKind = 'content_filtered' | 'translation_failed';
