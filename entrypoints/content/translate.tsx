@@ -177,11 +177,17 @@ function restorePreserves(translated: string, restoreMap: Map<string, string>): 
 
 export type TranslateMode = 'article' | 'page';
 
+/** page 模式下，依然要排除的容器 —— 翻译输出 / FAB / shadow UI 自身。 */
+const PAGE_MODE_HARD_EXCLUDE = '.english-agent-translation, script, style, noscript';
+/** page 模式更宽松的最短文本：UI 标签 / 短按钮文案也要翻 */
+const MIN_BLOCK_LENGTH_PAGE = 2;
+
 function extractArticleBlocks(mode: TranslateMode = 'article'): ArticleBlock[] {
   // article 模式：只在 <article> / <main> 容器内，过祖先黑名单 + Readability allowlist
-  // page 模式：扫整个 body，不过滤 —— 用户明确要"全页翻译"，含 nav/sidebar/footer
+  // page 模式：扫整个 body，放松最短长度 + 不过滤 link 比例 —— 用户要"整页翻"
   const root = mode === 'article' ? findArticleRoot() : document.body;
   const allow = mode === 'article' ? buildReadabilityAllowlist() : null;
+  const minLen = mode === 'article' ? MIN_BLOCK_LENGTH : MIN_BLOCK_LENGTH_PAGE;
   const elements = Array.from(root.querySelectorAll<HTMLElement>(BLOCK_SELECTOR));
   const blocks: ArticleBlock[] = [];
   for (const el of elements) {
@@ -190,21 +196,24 @@ function extractArticleBlocks(mode: TranslateMode = 'article'): ArticleBlock[] {
     const isArticleHeading =
       el.tagName === 'H1' && el.closest(ARTICLE_ROOT_SELECTOR) !== null;
 
-    // page 模式跳过祖先黑名单 + Readability 过滤；只保留最基本的过滤
     if (mode === 'article') {
       if (!isArticleHeading && el.closest(EXCLUDE_ANCESTOR_SELECTOR)) continue;
+    } else {
+      // page 模式：仅排除翻译节点自身 / script / style
+      if (el.closest(PAGE_MODE_HARD_EXCLUDE)) continue;
     }
 
     const rawText = (el.textContent ?? '').trim();
-    if (rawText.length < MIN_BLOCK_LENGTH) continue;
-    if (linkTextRatio(el) > 0.5) continue;
+    if (rawText.length < minLen) continue;
+    // article 模式才用 link 比例过滤；page 模式 nav 也要翻
+    if (mode === 'article' && linkTextRatio(el) > 0.5) continue;
 
     if (mode === 'article' && !isArticleHeading && allow && !isInReadableArticle(el, allow)) {
       continue;
     }
 
     const { text, restoreMap } = extractTextWithPreserves(el);
-    if (text.length < MIN_BLOCK_LENGTH) continue;
+    if (text.length < minLen) continue;
 
     const id = el.getAttribute(BLOCK_ID_ATTR) ?? crypto.randomUUID();
     el.setAttribute(BLOCK_ID_ATTR, id);
