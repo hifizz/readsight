@@ -1,8 +1,8 @@
 /**
  * 全文翻译主管道（PRD §7.1）。
  *
- * 走 Zhipu GLM-4-Flash（M2 lookup 翻译同款）—— 非 thinking 模型、便宜、
- * 中文母语、200-400ms 响应。同一段文本第二次出现走 cache 0 token。
+ * 默认走 DeepSeek (`deepseek-chat`/V3)——非推理、境内 API、中文质量好。
+ * Zhipu GLM-4-Flash + OpenRouter 作为兜底链。同一段文本第二次出现走 cache 0 token。
  *
  * 接口：translateBatch(['段1','段2',...]) → 每段独立 result，PRD §10
  * 按块独立失败：任一段 LLM 出问题不阻塞其他段。
@@ -22,33 +22,59 @@ import { db } from '@/db/client';
 import { translations } from '@/db/schema';
 import { zhipuFlash, isZhipuConfigured } from './zhipu';
 import { openrouterModel, isOpenrouterConfigured, OPENROUTER_MODEL_ID } from './openrouter';
+import { deepseekChat, isDeepseekConfigured, DEEPSEEK_MODEL_ID } from './deepseek';
 
 const TARGET_LANG = 'zh-CN' as const;
 const MODEL_LABEL_ZHIPU = 'glm-4-flash';
 
 /**
- * 主翻 provider 顺序。默认 Zhipu 主翻 + OpenRouter 兜底；
- * 设 TRANSLATE_PRIMARY=openrouter 翻过来：OpenRouter 主翻 + Zhipu 兜底。
- * 用于对比两家速度 / 跨境网络差异 / 内容审查影响。
+ * 缓存哈希命名空间 —— 历史原因这里固定用 'glm-4-flash'，跟当前实际
+ * 调用的模型无关。好处是切换 default provider（zhipu → deepseek）时
+ * 老缓存还能命中（同一段英文不重复翻译）；坏处是缓存里看不出来这条
+ * 翻译来自哪个模型，需要看 `model` 列。
+ */
+const CACHE_HASH_NAMESPACE = MODEL_LABEL_ZHIPU;
+
+/**
+ * 主翻 provider 顺序。
+ * 默认：DeepSeek 主 → Zhipu 兜底 → OpenRouter 兜底（境内优先，跨境收尾）。
+ * 通过 TRANSLATE_PRIMARY 切换主翻：'deepseek' (默认) | 'zhipu' | 'openrouter'。
+ * 兜底链固定保留其余两家。
  */
 interface ProviderSlot {
+  name: 'deepseek' | 'zhipu' | 'openrouter';
   model: LanguageModel | null;
   configured: boolean;
   label: string;
 }
 function getProviderOrder(): ProviderSlot[] {
-  const useOpenrouterFirst = process.env.TRANSLATE_PRIMARY === 'openrouter';
+  const deepseek: ProviderSlot = {
+    name: 'deepseek',
+    model: deepseekChat,
+    configured: isDeepseekConfigured(),
+    label: DEEPSEEK_MODEL_ID,
+  };
   const zhipu: ProviderSlot = {
+    name: 'zhipu',
     model: zhipuFlash,
     configured: isZhipuConfigured(),
     label: MODEL_LABEL_ZHIPU,
   };
   const openrouter: ProviderSlot = {
+    name: 'openrouter',
     model: openrouterModel,
     configured: isOpenrouterConfigured(),
     label: OPENROUTER_MODEL_ID,
   };
-  return useOpenrouterFirst ? [openrouter, zhipu] : [zhipu, openrouter];
+  const all = [deepseek, zhipu, openrouter];
+  const primary = process.env.TRANSLATE_PRIMARY?.toLowerCase();
+  if (primary === 'zhipu' || primary === 'openrouter' || primary === 'deepseek') {
+    return [
+      all.find((p) => p.name === primary)!,
+      ...all.filter((p) => p.name !== primary),
+    ];
+  }
+  return all; // 默认 deepseek → zhipu → openrouter
 }
 
 export interface TranslateResult {
@@ -209,7 +235,7 @@ export async function translateBatch(texts: string[]): Promise<TranslateResult[]
       results[i] = { original: t, zh: t, source: 'cache' }; // 跳过的原样回
       continue;
     }
-    const hash = hashKey(MODEL_LABEL_ZHIPU, TARGET_LANG, t);
+    const hash = hashKey(CACHE_HASH_NAMESPACE, TARGET_LANG, t);
     needTranslate.push({ index: i, text: t, hash });
   }
   if (needTranslate.length === 0) return results;
@@ -322,7 +348,7 @@ export async function translateBatch(texts: string[]): Promise<TranslateResult[]
       originalText: m.text,
       zh: zhStr,
       targetLang: TARGET_LANG,
-      model: modelByIndex[i] || MODEL_LABEL_ZHIPU,
+      model: modelByIndex[i] || CACHE_HASH_NAMESPACE,
     });
   }
   if (inserts.length > 0) {
