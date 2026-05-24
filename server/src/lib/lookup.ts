@@ -16,7 +16,20 @@ import lemmatize from 'wink-lemmatizer';
 import { eq } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { dictionaryEntries } from '@/db/schema';
-import { minimax, DEFAULT_MODEL_ID } from './minimax';
+import { minimax, DEFAULT_MODEL_ID, TRANSLATE_MODEL_ID } from './minimax';
+
+/**
+ * 翻译模型不可用时进程内"熔断"标志位。
+ *
+ * 触发条件：第一次调用 `TRANSLATE_MODEL_ID` (默认 -highspeed) 失败 → 设为 true，
+ * 后续所有翻译直接走 `DEFAULT_MODEL_ID` (M2.1 thinking)，不再浪费请求探活。
+ * 进程重启自动复位（next dev 改代码 / 服务重启即重置）。
+ *
+ * 这样：
+ *   - plan 升级后：进程重启 → 第一次正常走 highspeed
+ *   - plan 没升级：第一次 try highspeed 失败 → 全程 fallback，墙钟开销只多一次
+ */
+let translateHighspeedDisabled = false;
 
 /** 与扩展端 lib/messaging.ts 的 LookupResult 保持同步 —— 故意重复定义以避免跨包导入。 */
 export interface LookupResult {
@@ -84,7 +97,7 @@ async function fetchFreeDictionary(lemmaWord: string): Promise<LookupResult | nu
   let res: Response;
   try {
     // 给个超时，避免外部 API 拖累整条查询
-    res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    res = await fetch(url, { signal: AbortSignal.timeout(8000) });
   } catch (err) {
     console.warn('[lookup] free-dictionary fetch failed', err);
     return null;
@@ -151,12 +164,20 @@ async function fetchFreeDictionary(lemmaWord: string): Promise<LookupResult | nu
  *   - 翻译跟英文释义一起入 dictionary_entries 缓存 —— 一次翻译永久可用
  *   - 单个 POS 失败 = 该词性 cn 缺失，其他词性正常显示
  */
-async function translateOnePos(
+/**
+ * 用指定 model 跑一次"翻译这组定义"的 LLM 调用。
+ * 不做异常包装、不做降级 —— 那些逻辑在 translateOnePos 里。
+ *
+ * @param maxOutputTokens 给推理模型留足 thinking 预算时用大值（~2500）；
+ *                       速度模型用小值（~400）即可。
+ */
+async function translateOnce(
   word: string,
   pos: string,
   defs: string[],
+  modelId: string,
+  maxOutputTokens: number,
 ): Promise<string[] | null> {
-  if (defs.length === 0) return [];
   const prompt = [
     `You translate English dictionary definitions into short, idiomatic Chinese glosses suitable for a dictionary lookup card. The headword being defined is "${word}" (used as ${pos}).`,
     '',
@@ -173,27 +194,71 @@ async function translateOnePos(
     `Output: ONLY a JSON array of exactly ${defs.length} Chinese strings. No prose, no code fences.`,
   ].join('\n');
 
+  const result = await generateText({
+    model: minimax(modelId),
+    prompt,
+    maxOutputTokens,
+  });
+  const text = result.text;
+  const start = text.indexOf('[');
+  const end = text.lastIndexOf(']');
+  if (start < 0 || end <= start) {
+    console.warn(
+      `[lookup] zh ${pos} (${modelId}): no JSON array, finish=${result.finishReason}, raw=${text.slice(0, 200)}`,
+    );
+    return null;
+  }
+  const arr = JSON.parse(text.slice(start, end + 1)) as unknown;
+  if (
+    !Array.isArray(arr) ||
+    arr.length !== defs.length ||
+    !arr.every((s) => typeof s === 'string')
+  ) {
+    console.warn(
+      `[lookup] zh ${pos} (${modelId}): shape mismatch, got=${Array.isArray(arr) ? arr.length : 'non-array'}, expected=${defs.length}`,
+    );
+    return null;
+  }
+  return arr as string[];
+}
+
+/**
+ * 翻译一个 POS 下的所有定义。两层防御：
+ *   1. 首选 TRANSLATE_MODEL_ID（默认 MiniMax-M2.7-highspeed，非推理，快）
+ *   2. 任何错误 / 不可用 → 自动降级到 DEFAULT_MODEL_ID（thinking，慢但额度可用）
+ *
+ * 一旦发现 highspeed 不可用（rate-limit / 错误），设置进程内熔断 flag，
+ * 后续直接走 thinking model，避免重复探活浪费请求。
+ */
+async function translateOnePos(
+  word: string,
+  pos: string,
+  defs: string[],
+): Promise<string[] | null> {
+  if (defs.length === 0) return [];
+
+  // 1) 试 highspeed
+  if (!translateHighspeedDisabled) {
+    try {
+      // highspeed 不需要 thinking 预算；400 token 容纳 8 条短中文释义 + JSON 标点足够
+      const arr = await translateOnce(word, pos, defs, TRANSLATE_MODEL_ID, 400);
+      if (arr) return arr;
+      // 返 null = JSON 解析失败，不算 highspeed 出问题；继续走 fallback
+    } catch (err) {
+      // 真实异常（rate limit、网络、不在 plan 内）→ 熔断
+      console.warn(
+        `[lookup] highspeed (${TRANSLATE_MODEL_ID}) unavailable, falling back to ${DEFAULT_MODEL_ID} for the rest of this process:`,
+        err instanceof Error ? err.message : err,
+      );
+      translateHighspeedDisabled = true;
+    }
+  }
+
+  // 2) Fallback：thinking 模型，需要给足 token 容纳 reasoning
   try {
-    const result = await generateText({
-      model: minimax(DEFAULT_MODEL_ID),
-      prompt,
-      maxOutputTokens: 2500,
-    });
-    const text = result.text;
-    const start = text.indexOf('[');
-    const end = text.lastIndexOf(']');
-    if (start < 0 || end <= start) {
-      console.warn(`[lookup] zh ${pos}: no JSON array, finish=${result.finishReason}, raw=${text.slice(0, 200)}`);
-      return null;
-    }
-    const arr = JSON.parse(text.slice(start, end + 1)) as unknown;
-    if (!Array.isArray(arr) || arr.length !== defs.length || !arr.every((s) => typeof s === 'string')) {
-      console.warn(`[lookup] zh ${pos}: shape mismatch, got=${Array.isArray(arr) ? arr.length : 'non-array'}, expected=${defs.length}`);
-      return null;
-    }
-    return arr as string[];
+    return await translateOnce(word, pos, defs, DEFAULT_MODEL_ID, 2500);
   } catch (err) {
-    console.warn(`[lookup] zh ${pos}: threw`, err);
+    console.warn(`[lookup] zh ${pos} (${DEFAULT_MODEL_ID}) threw`, err);
     return null;
   }
 }
