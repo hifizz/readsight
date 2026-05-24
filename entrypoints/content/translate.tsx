@@ -630,6 +630,12 @@ export function TranslateFab() {
     startBottom: number;
     moved: boolean;
   } | null>(null);
+  /**
+   * mouseup 时若刚发生过拖拽，把这个置 true；onClick 读到后吞掉本次点击并清零。
+   * dragRef 在 mouseup 里就 null（避免遗留状态），但 click 需要知道"刚拖过"，
+   * 所以用独立 ref 跨越 mouseup → click 的事件边界。
+   */
+  const wasDraggedRef = useRef(false);
 
   // 启动时读持久化位置
   useEffect(() => {
@@ -659,6 +665,8 @@ export function TranslateFab() {
       if (!drag) return;
       dragRef.current = null;
       if (drag.moved) {
+        // 标记给紧随的 click 看 —— 拖过了，别把这次 click 当切换翻译
+        wasDraggedRef.current = true;
         // 拖完保存位置
         setPos((current) => {
           chrome.storage.local.set({ [FAB_POSITION_KEY]: current }).catch(() => {});
@@ -677,6 +685,8 @@ export function TranslateFab() {
   function onMouseDown(e: React.MouseEvent) {
     // 只响应主键
     if (e.button !== 0) return;
+    // 新一次操作，清掉上次可能没消费掉的 wasDragged（例如拖出按钮外松手没派发 click）
+    wasDraggedRef.current = false;
     dragRef.current = {
       startX: e.clientX,
       startY: e.clientY,
@@ -687,10 +697,11 @@ export function TranslateFab() {
   }
 
   function onClick(e: React.MouseEvent) {
-    // 移动超过阈值就当拖拽不当点击
-    const drag = dragRef.current;
-    if (drag?.moved) {
+    // mouseup 已在 dragRef null 之前把"刚拖过"信号写到 wasDraggedRef
+    if (wasDraggedRef.current) {
+      wasDraggedRef.current = false;
       e.preventDefault();
+      e.stopPropagation();
       return;
     }
     setMenuOpen(false);
