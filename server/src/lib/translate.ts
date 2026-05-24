@@ -21,6 +21,7 @@ import { inArray } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { translations } from '@/db/schema';
 import { zhipuFlash, isZhipuConfigured } from './zhipu';
+import { openrouterModel, isOpenrouterConfigured, OPENROUTER_MODEL_ID } from './openrouter';
 
 const TARGET_LANG = 'zh-CN' as const;
 const MODEL_LABEL_ZHIPU = 'glm-4-flash';
@@ -217,14 +218,42 @@ export async function translateBatch(texts: string[]): Promise<TranslateResult[]
     }
     return results;
   }
-  // 翻译入口：整批跑 → 失败则 divide-and-conquer 拆半递归 → 单段失败带 error
-  // 类型透传，让前端区分 content_filtered（内容审查，重试无效）vs
-  // translation_failed（其他临时错误，可重试）
+  // 翻译入口：两层 provider 链路
+  //   1) 整批走 Zhipu GLM-4-Flash（divide-and-conquer 自动拆半）
+  //   2) 命中 content_filtered 的段单独走 OpenRouter（西方模型无中国式审查）
+  //      —— 配置了 OPENROUTER_API_KEY 才启用；没配则直接保留 content_filtered
+  //   3) translation_failed（GLM JSON 截断等可重试错误）不走 OpenRouter，
+  //      让前端 retry 按钮自己再试
   const translated = await translateWithFallback(miss.map((m) => m.text), zhipuFlash);
+  // 跟 translated 等长的"实际跑的模型"数组，缓存写入用
+  const modelByIndex: string[] = translated.map((r) =>
+    typeof r === 'string' ? MODEL_LABEL_ZHIPU : '',
+  );
+
+  // 拣出被审查拦截的位置，丢给 OpenRouter 重翻
+  if (isOpenrouterConfigured() && openrouterModel) {
+    const filteredIndices: number[] = [];
+    translated.forEach((r, i) => {
+      if (typeof r !== 'string' && r.error === 'content_filtered') filteredIndices.push(i);
+    });
+    if (filteredIndices.length > 0) {
+      console.log(
+        `[translate] ${filteredIndices.length} segments hit content_filter, retrying via OpenRouter (${OPENROUTER_MODEL_ID})`,
+      );
+      const filteredTexts = filteredIndices.map((i) => miss[i].text);
+      const orResults = await translateWithFallback(filteredTexts, openrouterModel);
+      for (let k = 0; k < filteredIndices.length; k++) {
+        const idx = filteredIndices[k];
+        translated[idx] = orResults[k];
+        if (typeof orResults[k] === 'string') {
+          modelByIndex[idx] = OPENROUTER_MODEL_ID;
+        }
+      }
+    }
+  }
 
   // 3) 回填 + 入缓存。translateWithFallback 返 SingleResult：
-  //    string = 翻译成功；{ error } = 该段失败（content_filtered / translation_failed）。
-  //    失败段绝不入缓存。
+  //    string = 翻译成功；{ error } = 该段失败。失败段绝不入缓存。
   const inserts: Array<typeof translations.$inferInsert> = [];
   for (let i = 0; i < miss.length; i++) {
     const m = miss[i];
@@ -244,7 +273,7 @@ export async function translateBatch(texts: string[]): Promise<TranslateResult[]
       originalText: m.text,
       zh: r,
       targetLang: TARGET_LANG,
-      model: MODEL_LABEL_ZHIPU,
+      model: modelByIndex[i] || MODEL_LABEL_ZHIPU,
     });
   }
   if (inserts.length > 0) {
