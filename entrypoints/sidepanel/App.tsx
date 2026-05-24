@@ -3,33 +3,35 @@
  *
  * 关键设计：
  *   1. 单列布局，header 右上角的 History 按钮把 ThreadList 折进 Popover。
- *      不做左右双栏 —— sidepanel 本来就窄，左边再留 200px 给历史列表会把
- *      对话挤死。
- *   2. SelectionContext 注入：用 `DefaultChatTransport.body` 的函数形式 +
- *      `useRef` 让每次 send 实时读最新选区，**不必重建 runtime**（重建会
- *      丢失对话状态）。
- *   3. 新选区来自 background 的 `SELECTION_READY` 消息时，自动 `switchToNewThread()`
- *      把现有对话归档、开一条新对话 —— 用户对同一个选区追问应该有独立 thread。
- *   4. 启动时再从 `chrome.storage.session` 兜底读一次"最近一次选区"，对付
- *      "sidepanel 还没挂载完，message 被 Chrome 丢弃"的情况（PRD §10）。
+ *   2. SelectionContext 注入：`DefaultChatTransport.body` 的函数形式 + `useRef`
+ *      让每次 send 实时读最新选区，不必重建 runtime（重建会丢对话状态）。
+ *   3. 新选区来自 background 的 `SELECTION_READY` 消息时自动 `switchToNewThread()`
+ *      把现有对话归档、开一条新对话。
+ *   4. 启动时再从 `chrome.storage.session` 兜底读最近一次选区（PRD §10）。
+ *   5. 主区域 Tabs：Chat（assistant-ui Thread）/ Records（学习记录列表）。
+ *      Records 点条目 → fetch SelectionContext 详情 → 切回 Chat tab + 重新挂语境卡。
+ *      不重放历史对话内容（M4 任务），但 backend 会按 threadId=ctx.id
+ *      继续往同一 thread 写消息，未来重放数据已就位。
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AssistantRuntimeProvider,
   useAssistantRuntime,
 } from '@assistant-ui/react';
 import { useChatRuntime } from '@assistant-ui/react-ai-sdk';
 import { DefaultChatTransport } from 'ai';
-import { History, X } from 'lucide-react';
+import { History, X, MessageSquare, BookOpen } from 'lucide-react';
 import type { BackgroundMessage, SelectionContext } from '@/lib/messaging';
 import { Thread } from '@/components/assistant-ui/thread';
 import { ThreadList } from '@/components/assistant-ui/thread-list';
 import { WordCard } from '@/components/word-card';
 import { SpeakButton } from '@/components/speak-button';
+import { RecordsList, type HistoryRecord } from '@/components/records-list';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 const BACKEND = import.meta.env.WXT_BACKEND_URL ?? 'http://localhost:4010';
 const STORAGE_KEY_LATEST = 'english-agent:latest-selection-id';
@@ -37,19 +39,18 @@ const STORAGE_KEY_PREFIX = 'english-agent:selection:';
 
 export default function App() {
   const [selection, setSelection] = useState<SelectionContext | null>(null);
-  // 用 ref 让 transport body callback 拿到最新选区 —— 不能直接闭包捕获 selection，
-  // 否则 runtime 创建时就把当时的 selection 烤死。
+  const [activeTab, setActiveTab] = useState<'chat' | 'records'>('chat');
+  // 每次切到 records tab 就 +1 触发 RecordsList 重新拉历史 —— 用户期望看到最新
+  const [recordsRefreshToken, setRecordsRefreshToken] = useState(0);
+
   const selectionRef = useRef<SelectionContext | null>(null);
   selectionRef.current = selection;
 
-  // useMemo 确保 transport 只构造一次。BACKEND 是常量，selectionRef 是稳定引用。
   const runtime = useChatRuntime({
     transport: useMemo(
       () =>
         new DefaultChatTransport({
           api: `${BACKEND}/api/chat`,
-          // body 的函数形式：AI SDK v6 在每次发请求前调一次，相当于动态请求体扩展。
-          // 这里取最新 selectionRef.current，让后端 route.ts 在 system prompt 注入语境。
           body: () => ({
             selectionContext: selectionRef.current ?? undefined,
           }),
@@ -58,11 +59,29 @@ export default function App() {
     ),
   });
 
+  // 点条目：load SelectionContext 详情 → 切回 chat + 触发新 thread
+  const handleSelectRecord = useCallback(
+    async (record: HistoryRecord) => {
+      if (!record.lastContextRef) return;
+      try {
+        const res = await fetch(
+          `${BACKEND}/api/selection-context/${encodeURIComponent(record.lastContextRef)}`,
+        );
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const ctx = (await res.json()) as SelectionContext;
+        // 切到 chat tab 先于 setSelection，避免在 records 视图里闪一下语境卡
+        setActiveTab('chat');
+        setSelection(ctx);
+      } catch (err) {
+        console.warn('[sidepanel] load selection-context failed', err);
+      }
+    },
+    [],
+  );
+
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      {/* 这个桥接组件必须在 provider 内部，才能拿到 useAssistantRuntime。
-          它负责监听 SELECTION_READY，触发 switchToNewThread，写 selection state。 */}
-      <SelectionBridge onNewSelection={setSelection} />
+      <SelectionBridge onNewSelection={setSelection} onArrival={() => setActiveTab('chat')} />
       <TooltipProvider>
         <div className="flex h-screen flex-col bg-background text-foreground">
           <header className="flex items-center justify-between border-b px-3 py-2">
@@ -91,7 +110,6 @@ export default function App() {
           {selection && (
             <ContextCard ctx={selection} onClear={() => setSelection(null)} />
           )}
-          {/* WordCard 只对单词选区出现；其他类型靠 Thread 里的 LLM 解读就够了。 */}
           {selection?.selection.type === 'word' && (
             <WordCard
               surfaceForm={selection.selection.text}
@@ -100,32 +118,52 @@ export default function App() {
             />
           )}
 
-          <main className="flex-1 overflow-hidden">
-            <Thread />
-          </main>
+          <Tabs
+            value={activeTab}
+            onValueChange={(v) => {
+              const next = v as 'chat' | 'records';
+              setActiveTab(next);
+              if (next === 'records') setRecordsRefreshToken((t) => t + 1);
+            }}
+            className="flex flex-1 flex-col overflow-hidden"
+          >
+            <TabsList className="mx-3 mt-1.5 grid h-8 grid-cols-2">
+              <TabsTrigger value="chat" className="gap-1.5 text-xs">
+                <MessageSquare className="size-3.5" />
+                Chat
+              </TabsTrigger>
+              <TabsTrigger value="records" className="gap-1.5 text-xs">
+                <BookOpen className="size-3.5" />
+                Records
+              </TabsTrigger>
+            </TabsList>
+            <TabsContent value="chat" className="flex-1 overflow-hidden mt-0">
+              <Thread />
+            </TabsContent>
+            <TabsContent value="records" className="flex-1 overflow-y-auto mt-0">
+              <RecordsList
+                backendUrl={BACKEND}
+                onSelect={handleSelectRecord}
+                refreshToken={recordsRefreshToken}
+              />
+            </TabsContent>
+          </Tabs>
         </div>
       </TooltipProvider>
     </AssistantRuntimeProvider>
   );
 }
 
-/**
- * 桥接 background 的消息 / session storage 与 assistant-ui runtime。
- *
- * 行为：
- *   - 收到新 SELECTION_READY: 调 `runtime.switchToNewThread()` 开新对话，再写 selection
- *     state；老对话仍在 ThreadList 里可回看
- *   - 启动时如果 session storage 有"最近一次选区"，只显示语境卡，不强行开新 thread
- *     （场景：用户刚关掉再打开 sidepanel，想继续看到上次的语境）
- */
 function SelectionBridge({
   onNewSelection,
+  onArrival,
 }: {
   onNewSelection: (ctx: SelectionContext) => void;
+  /** 新选区到来时也切回 chat tab，避免用户在 records 视图里错过新对话 */
+  onArrival: () => void;
 }) {
   const runtime = useAssistantRuntime();
 
-  // 启动兜底：从 storage 取最近一次选区做 UI 恢复，不切 thread。
   useEffect(() => {
     let cancelled = false;
     chrome.storage.session.get(STORAGE_KEY_LATEST).then(async (res) => {
@@ -140,31 +178,23 @@ function SelectionBridge({
     };
   }, [onNewSelection]);
 
-  // 实时通道：每次 SELECTION_READY 都开新 thread + 注入新语境。
   useEffect(() => {
     function onMessage(message: BackgroundMessage) {
       if (message.type === 'SELECTION_READY') {
-        // 顺序很重要：先切到全新 thread，再 setState 让 ContextCard 跟着切换。
-        // 反过来会让旧 thread 的最后一刻看到新语境卡，UI 闪一下。
-        // switchToNewThread 是 Promise；不 await 也行（fire-and-forget），
-        // assistant-ui 内部会触发 re-render 把 UI 切到空 thread。
         runtime.threads
           .switchToNewThread()
           .catch((err) => console.warn('[english-agent] switchToNewThread failed', err));
+        onArrival();
         onNewSelection(message.payload);
       }
     }
     chrome.runtime.onMessage.addListener(onMessage);
     return () => chrome.runtime.onMessage.removeListener(onMessage);
-  }, [runtime, onNewSelection]);
+  }, [runtime, onNewSelection, onArrival]);
 
   return null;
 }
 
-/**
- * 语境卡：钉在 Thread 顶部展示当前关注的选区。
- * 关闭按钮 = 清掉语境，后续对话不再带 selectionContext，回归"通用问答"。
- */
 function ContextCard({
   ctx,
   onClear,
@@ -172,8 +202,6 @@ function ContextCard({
   ctx: SelectionContext;
   onClear: () => void;
 }) {
-  // 单词类型不在 ContextCard 上挂 Speak —— WordCard 自己的 ▶ 按钮放词典真人音频，
-  // 比 TTS 更准。其他类型（phrase / sentence / multi）才用 MiniMax T2A v2。
   const showSpeak = ctx.selection.type !== 'word';
   return (
     <div className="border-b bg-muted/30 px-3 py-2 text-xs">

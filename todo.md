@@ -37,26 +37,13 @@ M0/M1 已上线（main 分支 commit 链 `da9dc45..e486300`）：选区捕获、
 
 ---
 
-## Phase B — Sidepanel 学习记录 UI
+## Phase B — Sidepanel 学习记录 UI ✅
 
-- [ ] **B.1** 加 shadcn `tabs` 组件 + lucide `BookOpen` 图标
-  - `pnpm dlx shadcn@latest add tabs`
-  - 验证：`components/ui/tabs.tsx` 生成
-
-- [ ] **B.2** Sidepanel 主区域改 Tabs：`Chat | Records`
-  - Chat tab 内是现有 `<Thread />`；Records tab 是下面 B.3 的组件
-  - ContextCard 和 WordCard 仍然钉在 tabs 上方（两个 tab 共用同一个语境）
-  - 验证：手测可切换，Chat tab 体验不变
-
-- [ ] **B.3** `components/records-list.tsx` —— 学习记录列表
-  - 拉 `/api/history`；每条卡片：surfaceForm 大字 + lemma#pos 小字 + 次数 badge + 最近时间相对值 ("2h ago")
-  - loading / empty / error 三态
-  - 点条目 → `onSelect(record)` 回调（B.4 接住）
-
-- [ ] **B.4** 点条目的交互
-  - 自动切到 Chat tab + load 对应 `lastContextRef` 的 SelectionContext 进 React state
-  - 通过 background 发 `HIGHLIGHT_ANCHOR` 给 content script（依赖 D.1 / D.2 完工）
-  - 验证：手测点列表项后 Chat tab 顶部的 ContextCard 切换到对应选区
+- [x] **B.1** ✓ `pnpm dlx shadcn@latest add tabs badge` → `components/ui/tabs.tsx` + `badge.tsx`
+- [x] **B.2** ✓ Sidepanel 主区域改 Tabs `Chat | Records`，header + ContextCard + WordCard 仍钉在上方（两 tab 共享）；切到 Records tab 自动 +1 refreshToken 触发列表重拉
+- [x] **B.3** ✓ `components/records-list.tsx`：fetch `/api/history?limit=50`；卡片含 surfaceForm 大字 + (lemma) + pos chip + 次数 badge + 事件类型 chips + 相对时间；loading/empty/error 三态
+- [x] **B.4** ✓ 点条目：fetch `/api/selection-context/[id]` 拿完整 DTO → 切回 Chat tab + setSelection。新增后端路由 `server/src/app/api/selection-context/[id]/route.ts` 做 DB row → DTO 反向映射
+  - **D 完工后**：再补 background 发 `HIGHLIGHT_ANCHOR` 到 content script 让原文滚到 + 闪黄
 
 ---
 
