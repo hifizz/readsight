@@ -26,6 +26,31 @@ import { openrouterModel, isOpenrouterConfigured, OPENROUTER_MODEL_ID } from './
 const TARGET_LANG = 'zh-CN' as const;
 const MODEL_LABEL_ZHIPU = 'glm-4-flash';
 
+/**
+ * 主翻 provider 顺序。默认 Zhipu 主翻 + OpenRouter 兜底；
+ * 设 TRANSLATE_PRIMARY=openrouter 翻过来：OpenRouter 主翻 + Zhipu 兜底。
+ * 用于对比两家速度 / 跨境网络差异 / 内容审查影响。
+ */
+interface ProviderSlot {
+  model: LanguageModel | null;
+  configured: boolean;
+  label: string;
+}
+function getProviderOrder(): ProviderSlot[] {
+  const useOpenrouterFirst = process.env.TRANSLATE_PRIMARY === 'openrouter';
+  const zhipu: ProviderSlot = {
+    model: zhipuFlash,
+    configured: isZhipuConfigured(),
+    label: MODEL_LABEL_ZHIPU,
+  };
+  const openrouter: ProviderSlot = {
+    model: openrouterModel,
+    configured: isOpenrouterConfigured(),
+    label: OPENROUTER_MODEL_ID,
+  };
+  return useOpenrouterFirst ? [openrouter, zhipu] : [zhipu, openrouter];
+}
+
 export interface TranslateResult {
   original: string;
   zh: string;
@@ -71,6 +96,7 @@ async function callLLMBatch(
     `Output: ONLY a JSON array of exactly ${texts.length} Chinese strings, parallel-indexed. No prose, no code fences.`,
   ].join('\n');
 
+  const t0 = Date.now();
   const result = await generateText({
     model,
     prompt,
@@ -78,6 +104,8 @@ async function callLLMBatch(
     // 给到 6000 缓解截断；与速度无关（GLM 非推理）。
     maxOutputTokens: 6000,
   });
+  const elapsed = Date.now() - t0;
+  console.log(`[translate] ${modelLabel} batch(${texts.length}) → ${elapsed}ms, finish=${result.finishReason}`);
   const text = result.text;
   const start = text.indexOf('[');
   const end = text.lastIndexOf(']');
@@ -131,17 +159,18 @@ function classifyError(message: string | undefined): ErrorKind {
 async function translateWithFallback(
   texts: string[],
   model: LanguageModel,
+  modelLabel: string,
 ): Promise<SingleResult[]> {
   if (texts.length === 0) return [];
 
   // 整批先试一把
   let lastErrorMsg: string | undefined;
   try {
-    const arr = await callLLMBatch(texts, model, MODEL_LABEL_ZHIPU);
+    const arr = await callLLMBatch(texts, model, modelLabel);
     if (arr) return arr;
   } catch (err) {
     lastErrorMsg = err instanceof Error ? err.message : String(err);
-    console.warn(`[translate] batch(${texts.length}) threw:`, lastErrorMsg);
+    console.warn(`[translate] ${modelLabel} batch(${texts.length}) threw:`, lastErrorMsg);
   }
 
   // 单段还失败 → 透传分类后的 error
@@ -152,8 +181,8 @@ async function translateWithFallback(
   // 拆半递归 + 合并
   const mid = Math.floor(texts.length / 2);
   const [left, right] = await Promise.all([
-    translateWithFallback(texts.slice(0, mid), model),
-    translateWithFallback(texts.slice(mid), model),
+    translateWithFallback(texts.slice(0, mid), model, modelLabel),
+    translateWithFallback(texts.slice(mid), model, modelLabel),
   ]);
   return [...left, ...right];
 }
@@ -205,55 +234,54 @@ export async function translateBatch(texts: string[]): Promise<TranslateResult[]
   }
   if (miss.length === 0) return results;
 
-  // 2) LLM 批量翻译 miss 段 —— 纯 Zhipu GLM-4-Flash 路径
-  //    用户决策：去掉 MiniMax 兜底，GLM 失败就走前端 retry 按钮，更清爽
-  if (!isZhipuConfigured() || !zhipuFlash) {
+  // 2) LLM 批量翻译 miss 段 —— 两层 provider 链路
+  //    顺序由 TRANSLATE_PRIMARY env 决定：默认 zhipu 主 / openrouter 兜底，
+  //    或反过来用于对比测速。
+  const providers = getProviderOrder();
+  const usable = providers.filter((p) => p.configured && p.model);
+  if (usable.length === 0) {
     for (const m of miss) {
       results[m.index] = {
         original: m.text,
         zh: '',
         source: 'llm',
-        error: 'zhipu_not_configured',
+        error: 'translation_failed',
       };
     }
     return results;
   }
-  // 翻译入口：两层 provider 链路
-  //   1) 整批走 Zhipu GLM-4-Flash（divide-and-conquer 自动拆半）
-  //   2) 命中 content_filtered 的段单独走 OpenRouter（西方模型无中国式审查）
-  //      —— 配置了 OPENROUTER_API_KEY 才启用；没配则直接保留 content_filtered
-  //   3) translation_failed（GLM JSON 截断等可重试错误）不走 OpenRouter，
-  //      让前端 retry 按钮自己再试
-  const translated = await translateWithFallback(miss.map((m) => m.text), zhipuFlash);
-  // 跟 translated 等长的"实际跑的模型"数组，缓存写入用
+
+  // 主翻：整批走第一个 provider；divide-and-conquer 自动拆半
+  const [primary, ...fallbacks] = usable;
+  const tPrimary0 = Date.now();
+  const translated = await translateWithFallback(miss.map((m) => m.text), primary.model!, primary.label);
+  console.log(`[translate] primary=${primary.label} done in ${Date.now() - tPrimary0}ms`);
+
   const modelByIndex: string[] = translated.map((r) =>
-    typeof r === 'string' ? MODEL_LABEL_ZHIPU : '',
+    typeof r === 'string' ? primary.label : '',
   );
 
-  // 所有 Zhipu 失败位置（content_filtered / translation_failed / 网络 /
-  // RPM rate-limit 级联）全丢给 OpenRouter 重翻。
-  //
-  // 之前只盖 content_filtered，但实测 GLM 免费 tier 在并发 batch 下经常
-  // RPM 撞墙，错误信息里没"敏感"关键字 → classifyError 归 translation_failed
-  // → 不走 OpenRouter → 用户看到 5 条连续失败但手动重试又能过（间隔够大）。
-  // 扩大兜底范围彻底解决这类级联失败。
-  if (isOpenrouterConfigured() && openrouterModel) {
+  // 兜底链：每一层把仍失败的位置丢下一层。同样覆盖 content_filtered +
+  // translation_failed + 任何错误（实测 GLM RPM 撞墙也归 translation_failed
+  // 且 OpenRouter 独立 quota 能救）。
+  for (const fb of fallbacks) {
     const failedIndices: number[] = [];
     translated.forEach((r, i) => {
       if (typeof r !== 'string') failedIndices.push(i);
     });
-    if (failedIndices.length > 0) {
-      console.log(
-        `[translate] ${failedIndices.length} segments failed on Zhipu, retrying via OpenRouter (${OPENROUTER_MODEL_ID})`,
-      );
-      const failedTexts = failedIndices.map((i) => miss[i].text);
-      const orResults = await translateWithFallback(failedTexts, openrouterModel);
-      for (let k = 0; k < failedIndices.length; k++) {
-        const idx = failedIndices[k];
-        translated[idx] = orResults[k];
-        if (typeof orResults[k] === 'string') {
-          modelByIndex[idx] = OPENROUTER_MODEL_ID;
-        }
+    if (failedIndices.length === 0) break;
+    console.log(
+      `[translate] ${failedIndices.length} segments failed, retrying via fallback=${fb.label}`,
+    );
+    const failedTexts = failedIndices.map((i) => miss[i].text);
+    const tFb0 = Date.now();
+    const fbResults = await translateWithFallback(failedTexts, fb.model!, fb.label);
+    console.log(`[translate] fallback=${fb.label} done in ${Date.now() - tFb0}ms`);
+    for (let k = 0; k < failedIndices.length; k++) {
+      const idx = failedIndices[k];
+      translated[idx] = fbResults[k];
+      if (typeof fbResults[k] === 'string') {
+        modelByIndex[idx] = fb.label;
       }
     }
   }
