@@ -137,17 +137,17 @@ async function callLLMBatch(
         '- Keep paragraph length proportionate to the original.',
         '- No commentary, no prefixes, no numbering.',
         '- CRITICAL: Preserve any token matching ⟪C<digits>⟫ (e.g. ⟪C1⟫, ⟪C2⟫) EXACTLY as-is — these are code placeholders.',
+        '- CRITICAL JSON SAFETY: inside each translated string, do NOT use full-width Chinese quotation marks `“` `”` `「` `」` as delimiters for inline quoted phrases. If the English source has inline quotes like "hello", render them in Chinese without quotes, or paraphrase. Reason: full-width quotes have caused upstream parsers to mis-detect string boundaries. ASCII double-quotes inside a string must be escaped as \\".',
         '',
         `Input (${texts.length} English paragraphs, parallel-indexed):`,
         JSON.stringify(texts),
         '',
         `Return a JSON object: { "translations": [<${texts.length} Chinese strings>] }`,
       ].join('\n'),
-      // DeepSeek-V3 / GLM-4-Flash / 大多数 OpenRouter free 模型默认上限 8192。
-      // 我们留 8000 给译文 + JSON 框架。12 段中文 ~3000 + 框架 ~200 远低于此，
-      // 但段落本身偏长（一段 200+ 词）或带占位符回填后会膨胀，留余量避免
-      // finish=length 截断（截断后 generateObject 会抛 NoObjectGeneratedError）。
-      maxOutputTokens: 8000,
+      // V4-flash 单次最高输出 384K tokens；我们 batch=12，正常 3-5K 就够，
+      // 但段落偏长 / 带占位符回填会膨胀。给到 32K 彻底排除截断为变量
+      // （截断会抛 NoObjectGeneratedError，触发整批兜底重试）。
+      maxOutputTokens: 32_000,
     });
     object = result.object;
     finishReason = result.finishReason;
