@@ -16,6 +16,7 @@ import { useEffect, useState } from 'react';
 import type { SelectionContext, SelectionType, BackgroundMessage } from '@/lib/messaging';
 import { resolveLemma } from '@/lib/lemmatize';
 import { TranslateFab, togglePageTranslation } from './translate';
+import { SelectionPopup, openPopup } from './popup';
 
 const BACKEND = import.meta.env.WXT_BACKEND_URL ?? 'http://localhost:4010';
 const KNOWN_ITEMS_KEY = 'english-agent:known-items';
@@ -47,7 +48,14 @@ export default defineContentScript({
         const host = document.createElement('div');
         container.append(host);
         const root = ReactDOM.createRoot(host);
-        root.render(<SelectionPill />);
+        // pill 和 popup 同一个 Shadow DOM，z-index / 样式一致；
+        // 由 popup 自己的 useSyncExternalStore 决定是否显示
+        root.render(
+          <>
+            <SelectionPill />
+            <SelectionPopup />
+          </>,
+        );
         return root;
       },
       onRemove: (root) => root?.unmount(),
@@ -282,7 +290,6 @@ function SelectionPill() {
       }}
       onClick={() => {
         // 单词选区：记下 lemma，避免本会话再扫到时误报 passive_reencounter。
-        // 防御：lemmatize 在 bundled 浏览器环境若异常，绝不能阻塞 sendMessage。
         try {
           if (ctx.selection.type === 'word') {
             activelyQueriedLemmas.add(resolveLemma(ctx.selection.text));
@@ -290,11 +297,15 @@ function SelectionPill() {
         } catch (err) {
           console.warn('[english-agent] resolveLemma in pill click threw', err);
         }
-        // 转发给 background。这里点击是真实用户手势，background 后续调用
-        // chrome.sidePanel.open() 才能被允许。
-        const msg: BackgroundMessage = { type: 'ASK_WITH_SELECTION', payload: ctx };
-        chrome.runtime.sendMessage(msg).catch((err) => {
-          console.warn('[english-agent] ASK_WITH_SELECTION send failed', err);
+        // PRD §8.1 轻路径：pill 点击不再直接开 sidepanel，先展开 popup 让用户
+        // 用快捷按钮就地查。需要深聊时 popup 里再有"深聊"按钮跳 sidepanel。
+        openPopup(ctx, {
+          rect: {
+            top: window.scrollY + rect.top,
+            left: window.scrollX + rect.left,
+            right: window.scrollX + rect.right,
+            bottom: window.scrollY + rect.bottom,
+          },
         });
         setSnapshot(null);
       }}
