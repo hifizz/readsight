@@ -13,14 +13,18 @@ export const minimax = createMinimax({
 /**
  * 主对话模型（PRD §6.1 chat、§6.2 词典 LLM 兜底用）。
  *
- * 当前用 MiniMax-M2.1：thinking 模型，回答有深度但每次响应大头是推理 token。
+ * 用 MiniMax-M2.1：thinking 模型，回答有深度但每次响应大头是推理 token。
  * 适合带语境的复杂解释（"这个词在本句里的特殊用法"）。
  *
- * 模型选择参考（截至 2026-05）：
- *   - MiniMax-M2.7   最新 thinking 模型，最强但更慢
+ * 模型选择参考（截至 2026-05，需对应 plan 开通）：
+ *   - MiniMax-M2.7   最新 thinking，最强但更慢
  *   - MiniMax-M2.5   thinking
- *   - MiniMax-M2.1   thinking，平衡（我们的默认）
+ *   - MiniMax-M2.1   thinking，平衡（默认）
  *   - MiniMax-M2     thinking，老
+ *
+ * 注意 -highspeed 变体（如 M2.7-highspeed）只是关掉 CoT 的同一只大模型，
+ * 不是真小快模型；当前开发 plan 也没解锁它们。短文本翻译走 Zhipu GLM-4-Flash
+ * 而不是 MiniMax -highspeed，理由见 src/lib/zhipu.ts。
  */
 export const DEFAULT_MODEL_ID = (process.env.MINIMAX_CHAT_MODEL ??
   'MiniMax-M2.1') as
@@ -29,20 +33,3 @@ export const DEFAULT_MODEL_ID = (process.env.MINIMAX_CHAT_MODEL ??
   | 'MiniMax-M2.5'
   | 'MiniMax-M2.7'
   | string;
-
-/**
- * 翻译 / 短文本任务专用 —— 速度版（non-thinking）。
- *
- * MiniMax `-highspeed` 后缀模型不消耗 token 做 chain-of-thought，
- * 对"英→中字典短释义"这种机械任务又快又省。可用 ID（priority 高到低）：
- *   - MiniMax-M2.7-highspeed   最新
- *   - MiniMax-M2.5-highspeed
- *   - MiniMax-M2.1-highspeed
- *
- * 注意：MiniMax 平台不同 plan 对 -highspeed 的额度不同。当前开发 key
- * 的 "Token Plan Plus" 没分配 highspeed 额度（0/0 used），返 429。
- * 因此 lookup.ts 的 translateOnePos 写了自动降级到 DEFAULT_MODEL_ID
- * 的逻辑 —— 升级 plan 后零代码改动直接享受速度提升。
- */
-export const TRANSLATE_MODEL_ID = (process.env.MINIMAX_TRANSLATE_MODEL ??
-  'MiniMax-M2.7-highspeed') as string;

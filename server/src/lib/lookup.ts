@@ -11,25 +11,13 @@
  *
  * 注意：缓存按 lemma 做 key，所以 "outed" 和 "outing" 共用同一条缓存。
  */
-import { generateText } from 'ai';
+import { generateText, type LanguageModel } from 'ai';
 import lemmatize from 'wink-lemmatizer';
 import { eq } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { dictionaryEntries } from '@/db/schema';
-import { minimax, DEFAULT_MODEL_ID, TRANSLATE_MODEL_ID } from './minimax';
-
-/**
- * 翻译模型不可用时进程内"熔断"标志位。
- *
- * 触发条件：第一次调用 `TRANSLATE_MODEL_ID` (默认 -highspeed) 失败 → 设为 true，
- * 后续所有翻译直接走 `DEFAULT_MODEL_ID` (M2.1 thinking)，不再浪费请求探活。
- * 进程重启自动复位（next dev 改代码 / 服务重启即重置）。
- *
- * 这样：
- *   - plan 升级后：进程重启 → 第一次正常走 highspeed
- *   - plan 没升级：第一次 try highspeed 失败 → 全程 fallback，墙钟开销只多一次
- */
-let translateHighspeedDisabled = false;
+import { minimax, DEFAULT_MODEL_ID } from './minimax';
+import { zhipuFlash, isZhipuConfigured } from './zhipu';
 
 /** 与扩展端 lib/messaging.ts 的 LookupResult 保持同步 —— 故意重复定义以避免跨包导入。 */
 export interface LookupResult {
@@ -168,14 +156,17 @@ async function fetchFreeDictionary(lemmaWord: string): Promise<LookupResult | nu
  * 用指定 model 跑一次"翻译这组定义"的 LLM 调用。
  * 不做异常包装、不做降级 —— 那些逻辑在 translateOnePos 里。
  *
- * @param maxOutputTokens 给推理模型留足 thinking 预算时用大值（~2500）；
- *                       速度模型用小值（~400）即可。
+ * @param model 任意符合 AI SDK LanguageModel 接口的模型实例。
+ *              传 Zhipu GLM-4-Flash 时无需推理预算；传 MiniMax M2.x 时要留足。
+ * @param modelLabel 仅日志用；标识失败时是哪一家的问题。
+ * @param maxOutputTokens 推理模型留 2500（容纳 CoT）；小快模型 400 够了。
  */
 async function translateOnce(
   word: string,
   pos: string,
   defs: string[],
-  modelId: string,
+  model: LanguageModel,
+  modelLabel: string,
   maxOutputTokens: number,
 ): Promise<string[] | null> {
   const prompt = [
@@ -195,7 +186,7 @@ async function translateOnce(
   ].join('\n');
 
   const result = await generateText({
-    model: minimax(modelId),
+    model,
     prompt,
     maxOutputTokens,
   });
@@ -204,7 +195,7 @@ async function translateOnce(
   const end = text.lastIndexOf(']');
   if (start < 0 || end <= start) {
     console.warn(
-      `[lookup] zh ${pos} (${modelId}): no JSON array, finish=${result.finishReason}, raw=${text.slice(0, 200)}`,
+      `[lookup] zh ${pos} (${modelLabel}): no JSON array, finish=${result.finishReason}, raw=${text.slice(0, 200)}`,
     );
     return null;
   }
@@ -215,7 +206,7 @@ async function translateOnce(
     !arr.every((s) => typeof s === 'string')
   ) {
     console.warn(
-      `[lookup] zh ${pos} (${modelId}): shape mismatch, got=${Array.isArray(arr) ? arr.length : 'non-array'}, expected=${defs.length}`,
+      `[lookup] zh ${pos} (${modelLabel}): shape mismatch, got=${Array.isArray(arr) ? arr.length : 'non-array'}, expected=${defs.length}`,
     );
     return null;
   }
@@ -223,12 +214,12 @@ async function translateOnce(
 }
 
 /**
- * 翻译一个 POS 下的所有定义。两层防御：
- *   1. 首选 TRANSLATE_MODEL_ID（默认 MiniMax-M2.7-highspeed，非推理，快）
- *   2. 任何错误 / 不可用 → 自动降级到 DEFAULT_MODEL_ID（thinking，慢但额度可用）
+ * 翻译一个 POS 下的所有定义，两层防御：
+ *   1. 首选 Zhipu GLM-4-Flash（如果配了 ZHIPU_API_KEY）—— 真小快模型，~200-400ms
+ *   2. Fallback: MiniMax DEFAULT_MODEL_ID（thinking 大模型）—— 当 Zhipu 失败 / 未配置
  *
- * 一旦发现 highspeed 不可用（rate-limit / 错误），设置进程内熔断 flag，
- * 后续直接走 thinking model，避免重复探活浪费请求。
+ * Zhipu 没配 = 直接走 MiniMax 路径（PR 兼容：可不动 env 仍能跑）。
+ * Zhipu 配了但失败（429 / 网络 / key 失效）= 透明降级，单次多一跳。
  */
 async function translateOnePos(
   word: string,
@@ -237,26 +228,30 @@ async function translateOnePos(
 ): Promise<string[] | null> {
   if (defs.length === 0) return [];
 
-  // 1) 试 highspeed
-  if (!translateHighspeedDisabled) {
+  // 1) Primary: Zhipu GLM-4-Flash
+  if (isZhipuConfigured() && zhipuFlash) {
     try {
-      // highspeed 不需要 thinking 预算；400 token 容纳 8 条短中文释义 + JSON 标点足够
-      const arr = await translateOnce(word, pos, defs, TRANSLATE_MODEL_ID, 400);
+      const arr = await translateOnce(word, pos, defs, zhipuFlash, 'glm-4-flash', 400);
       if (arr) return arr;
-      // 返 null = JSON 解析失败，不算 highspeed 出问题；继续走 fallback
+      // 返 null = 解析失败，可能 LLM 输出不规整；继续 fallback
     } catch (err) {
-      // 真实异常（rate limit、网络、不在 plan 内）→ 熔断
       console.warn(
-        `[lookup] highspeed (${TRANSLATE_MODEL_ID}) unavailable, falling back to ${DEFAULT_MODEL_ID} for the rest of this process:`,
+        `[lookup] zh ${pos} (glm-4-flash) threw, falling back to MiniMax:`,
         err instanceof Error ? err.message : err,
       );
-      translateHighspeedDisabled = true;
     }
   }
 
-  // 2) Fallback：thinking 模型，需要给足 token 容纳 reasoning
+  // 2) Fallback: MiniMax thinking model
   try {
-    return await translateOnce(word, pos, defs, DEFAULT_MODEL_ID, 2500);
+    return await translateOnce(
+      word,
+      pos,
+      defs,
+      minimax(DEFAULT_MODEL_ID),
+      DEFAULT_MODEL_ID,
+      2500,
+    );
   } catch (err) {
     console.warn(`[lookup] zh ${pos} (${DEFAULT_MODEL_ID}) threw`, err);
     return null;
