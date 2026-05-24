@@ -459,14 +459,6 @@ class TranslationOrchestrator {
     if (this.isActive) return;
     this.callbacks = cb;
     this.blocks.clear();
-    for (const b of blocks) {
-      this.blocks.set(b.id, {
-        element: b.element,
-        text: b.text,
-        restoreMap: b.restoreMap,
-        status: 'idle',
-      });
-    }
     this.observer = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
@@ -477,7 +469,35 @@ class TranslationOrchestrator {
       },
       { rootMargin: VIEWPORT_ROOT_MARGIN, threshold: 0 },
     );
-    for (const b of blocks) this.observer.observe(b.element);
+    this.addBlocks(blocks);
+  }
+
+  /** 总块数，供外部 (moduleState.total) 同步用 */
+  get totalCount(): number {
+    return this.blocks.size;
+  }
+
+  /**
+   * 增量追加 blocks —— MutationObserver 检测到 SPA 续渲染时调用。
+   * 已知 id 跳过；已被移出 DOM 的元素跳过；其余 observe + 排队待翻。
+   * 返回真正新增的块数（外部用来更新 total / 决定是否触发 onTotalChange）。
+   */
+  addBlocks(blocks: ArticleBlock[]): number {
+    if (!this.observer) return 0;
+    let added = 0;
+    for (const b of blocks) {
+      if (this.blocks.has(b.id)) continue;
+      if (!document.body.contains(b.element)) continue;
+      this.blocks.set(b.id, {
+        element: b.element,
+        text: b.text,
+        restoreMap: b.restoreMap,
+        status: 'idle',
+      });
+      this.observer.observe(b.element);
+      added++;
+    }
+    return added;
   }
 
   stop(): void {
@@ -653,6 +673,9 @@ function getModuleState(): ModuleState {
  */
 export function togglePageTranslation(mode: TranslateMode = 'article'): void {
   if (moduleState.status === 'active') {
+    // 必须先停 MutationObserver：undoAllTranslations 会移除大量翻译节点，
+    // 这些 childList 变化要是被 observer 捕获，rescan 会在 stop 后空跑。
+    stopMutationWatch();
     orchestrator.stop();
     undoAllTranslations();
     setModuleState({ status: 'idle', done: 0, total: 0 });
@@ -671,6 +694,56 @@ export function togglePageTranslation(mode: TranslateMode = 'article'): void {
       setModuleState({ ...moduleState, done: moduleState.done + 1 });
     },
   });
+  // SPA 续渲染 / 无限滚动 / lazy mount 都会触发 DOM 变化 → 续翻
+  startMutationWatch(mode);
+}
+
+// --- MutationObserver 续翻 ---------------------------------------------
+//
+// 翻译激活期间监听 document.body 的 childList+subtree 变化；新节点经 debounce
+// 后 rescan，把新出现的 block 喂给 orchestrator.addBlocks。覆盖 Twitter / Reddit
+// 这类滚动续渲染场景。
+//
+// 为什么不会自激震荡：
+//   - 我们自己注入的 .english-agent-translation 节点也会触发 mutation，
+//     但 extractArticleBlocks 里 PAGE_MODE_HARD_EXCLUDE / TRANSLATION_CLASS
+//     都把它过掉，orchestrator.addBlocks 又按 id 去重，
+//     结果是"找到 0 个新块"，自然停下。
+//   - 我们不监听 attributes，setAttribute(BLOCK_ID_ATTR) 不会触发 mutation。
+
+let mutationObserver: MutationObserver | null = null;
+let mutationDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+/** debounce 500ms：DOM mutation 以"突发"形式来（React commit 一次性塞一堆节点）*/
+const MUTATION_DEBOUNCE_MS = 500;
+
+function startMutationWatch(mode: TranslateMode): void {
+  if (mutationObserver) return;
+  mutationObserver = new MutationObserver(() => {
+    if (mutationDebounceTimer) clearTimeout(mutationDebounceTimer);
+    mutationDebounceTimer = setTimeout(() => rescanForNewBlocks(mode), MUTATION_DEBOUNCE_MS);
+  });
+  mutationObserver.observe(document.body, { childList: true, subtree: true });
+}
+
+function stopMutationWatch(): void {
+  mutationObserver?.disconnect();
+  mutationObserver = null;
+  if (mutationDebounceTimer) {
+    clearTimeout(mutationDebounceTimer);
+    mutationDebounceTimer = null;
+  }
+}
+
+function rescanForNewBlocks(mode: TranslateMode): void {
+  mutationDebounceTimer = null;
+  if (!orchestrator.isActive) return;
+  // 全量重扫；老块按 BLOCK_ID_ATTR 在 orchestrator 内部去重，新块入队。
+  // O(N) DOM walk，N 即 BLOCK_SELECTOR / page tags 命中数，毫秒级。
+  const all = extractArticleBlocks(mode);
+  const added = orchestrator.addBlocks(all);
+  if (added > 0) {
+    setModuleState({ ...moduleState, total: orchestrator.totalCount });
+  }
 }
 
 /** 状态变化时通知外部（用于 background 更新右键菜单标题） */
