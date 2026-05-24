@@ -14,13 +14,17 @@
  *   - 块 → element 映射用 data-eag-id 属性绑定
  */
 import { useState } from 'react';
-import { Languages, Loader2, X } from 'lucide-react';
+import { Languages, X } from 'lucide-react';
 import { Readability, isProbablyReaderable } from '@mozilla/readability';
 import type { BackgroundMessage, TranslationResult } from '@/lib/messaging';
 
 const BLOCK_SELECTOR = 'p, li, blockquote, h2, h3, h4, h5, h6, dd';
 /** 内联标签：内容当作"代码 / 标识符"占位符发给 LLM，翻译完原样恢复 */
 const INLINE_PRESERVE_SELECTOR = 'code, kbd, samp, var, tt';
+/** 视口预测：上下 300px 提前进入翻译队列，用户滚动时已经翻译好可见 */
+const VIEWPORT_ROOT_MARGIN = '300px 0px 300px 0px';
+/** 并发上限：不要同时发太多 HTTP（Zhipu 速率 + 浏览器并发限制） */
+const MAX_CONCURRENT = 4;
 const ROOT_SELECTOR_CANDIDATES = ['article', 'main', '[role="main"]'];
 /** 在这些祖先内的块直接跳过 —— 导航 / 边栏 / 页脚 / 相关阅读等噪声 */
 const EXCLUDE_ANCESTOR_SELECTOR = [
@@ -43,7 +47,6 @@ const EXCLUDE_ANCESTOR_SELECTOR = [
   '.newsletter',
 ].join(',');
 const MIN_BLOCK_LENGTH = 30;
-const BATCH_SIZE = 1; // 渐进式：一块一批，翻好就插
 const BATCH_TIMEOUT_MS = 12_000;
 const TRANSLATION_CLASS = 'english-agent-translation';
 const BLOCK_ID_ATTR = 'data-eag-id';
@@ -301,13 +304,140 @@ async function translateBatchViaBackground(
   return response.results;
 }
 
-function chunk<T>(arr: T[], size: number): T[][] {
-  const out: T[][] = [];
-  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
-  return out;
+// --- 视口驱动翻译编排 ---------------------------------------------------
+//
+// 设计：
+//   - 不再"一次性把所有 block 都丢进翻译队列"，改成 IntersectionObserver
+//     监听每个 block，进入视口（含 300px 上下冗余）才入队
+//   - 模块级单例 + 并发上限 4 个 HTTP；用户滚动快时多块同时排队但实际并发受限
+//   - 缓存命中走 server 返回，前端不区分 —— 命中 ~50ms 用户感觉是瞬间
+//   - 撤销时 disconnect observer + 清队列 + 移除注入节点
+//
+// 状态机（模块级单例）：
+//   idle  →  active: 用户点 FAB，注册 observer，blocks 进视口逐个翻译
+//   active → idle:   用户再点 FAB，停止编排，移除已注入译文
+
+interface RuntimeBlock {
+  element: HTMLElement;
+  text: string;
+  restoreMap: Map<string, string>;
+  status: 'idle' | 'pending' | 'translating' | 'done' | 'error';
 }
 
-export type FabStatus = 'idle' | 'translating' | 'translated' | 'error';
+interface OrchestratorCallbacks {
+  /** 一个 block 翻译完成（成功或失败）时调用，用于更新 FAB 进度 */
+  onProgress: () => void;
+}
+
+class TranslationOrchestrator {
+  private observer: IntersectionObserver | null = null;
+  private blocks = new Map<string, RuntimeBlock>();
+  private pending: string[] = [];
+  private inFlight = new Set<string>();
+  private callbacks: OrchestratorCallbacks | null = null;
+
+  get isActive(): boolean {
+    return this.observer !== null;
+  }
+
+  start(blocks: ArticleBlock[], cb: OrchestratorCallbacks): void {
+    if (this.isActive) return;
+    this.callbacks = cb;
+    this.blocks.clear();
+    for (const b of blocks) {
+      this.blocks.set(b.id, {
+        element: b.element,
+        text: b.text,
+        restoreMap: b.restoreMap,
+        status: 'idle',
+      });
+    }
+    this.observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          const id = entry.target.getAttribute(BLOCK_ID_ATTR);
+          if (id) this.enqueue(id);
+        }
+      },
+      { rootMargin: VIEWPORT_ROOT_MARGIN, threshold: 0 },
+    );
+    for (const b of blocks) this.observer.observe(b.element);
+  }
+
+  stop(): void {
+    this.observer?.disconnect();
+    this.observer = null;
+    this.blocks.clear();
+    this.pending.length = 0;
+    this.inFlight.clear();
+    this.callbacks = null;
+  }
+
+  private enqueue(id: string): void {
+    const block = this.blocks.get(id);
+    if (!block) return;
+    if (block.status !== 'idle') return; // pending / in-flight / done 都跳过
+    block.status = 'pending';
+    this.pending.push(id);
+    this.pump();
+  }
+
+  private pump(): void {
+    while (this.inFlight.size < MAX_CONCURRENT && this.pending.length > 0) {
+      const id = this.pending.shift();
+      if (!id) break;
+      this.inFlight.add(id);
+      void this.translateOne(id).finally(() => {
+        this.inFlight.delete(id);
+        this.pump();
+      });
+    }
+  }
+
+  private async translateOne(id: string): Promise<void> {
+    const block = this.blocks.get(id);
+    if (!block) return;
+    block.status = 'translating';
+    try {
+      const results = await translateBatchViaBackground([{ id, text: block.text }]);
+      const r = results[0];
+      if (!r) {
+        block.status = 'error';
+        this.callbacks?.onProgress();
+        return;
+      }
+      const restored: TranslationResult = r.zh
+        ? { ...r, zh: restorePreserves(r.zh, block.restoreMap) }
+        : r;
+      injectTranslation(block.element, restored, () => this.retry(id));
+      block.status = r.error ? 'error' : 'done';
+    } catch (err) {
+      console.warn('[english-agent] translateOne failed', err);
+      injectTranslation(
+        block.element,
+        { id, zh: '', source: 'llm', error: String(err) },
+        () => this.retry(id),
+      );
+      block.status = 'error';
+    } finally {
+      this.callbacks?.onProgress();
+    }
+  }
+
+  /** 单 block 重试（错误状态点击"重试"按钮触发） */
+  private async retry(id: string): Promise<void> {
+    const block = this.blocks.get(id);
+    if (!block) return;
+    // 状态回 idle 再走 enqueue 复用并发队列
+    block.status = 'idle';
+    this.enqueue(id);
+  }
+}
+
+const orchestrator = new TranslationOrchestrator();
+
+export type FabStatus = 'idle' | 'active';
 
 interface FabProps {
   onStatusChange?: (s: FabStatus) => void;
@@ -322,93 +452,27 @@ export function TranslateFab({ onStatusChange }: FabProps) {
     onStatusChange?.(next);
   }
 
-  async function retryBlock(
-    blockId: string,
-    element: HTMLElement,
-    text: string,
-    restoreMap: Map<string, string>,
-  ) {
-    try {
-      const results = await translateBatchViaBackground([{ id: blockId, text }]);
-      const r = results[0];
-      if (!r) return;
-      // 把 ⟪Cn⟫ 占位符换回原代码文本
-      const restored: TranslationResult = r.zh ? { ...r, zh: restorePreserves(r.zh, restoreMap) } : r;
-      injectTranslation(element, restored, () => retryBlock(blockId, element, text, restoreMap));
-    } catch (err) {
-      console.warn('[english-agent] retry block failed', err);
-      injectTranslation(
-        element,
-        { id: blockId, zh: '', source: 'llm', error: String(err) },
-        () => retryBlock(blockId, element, text, restoreMap),
-      );
-    }
-  }
-
-  async function handleClick() {
-    if (status === 'translating') return;
-    if (status === 'translated' || status === 'error') {
+  function handleClick() {
+    if (status === 'active') {
+      // 撤销：停止编排 + 清掉所有注入译文
+      orchestrator.stop();
       undoAllTranslations();
       update('idle');
+      setProgress({ done: 0, total: 0 });
       return;
     }
 
-    update('translating');
+    // 启动：抽取所有 block，注册 IntersectionObserver 视口驱动翻译
     const blocks = extractArticleBlocks();
     if (blocks.length === 0) {
       console.warn('[english-agent] no translatable blocks found');
-      update('idle');
       return;
     }
     setProgress({ done: 0, total: blocks.length });
-
-    const elementById = new Map(blocks.map((b) => [b.id, b.element]));
-    const textById = new Map(blocks.map((b) => [b.id, b.text]));
-    const restoreMapById = new Map(blocks.map((b) => [b.id, b.restoreMap]));
-
-    const batches = chunk(
-      blocks.map((b) => ({ id: b.id, text: b.text })),
-      BATCH_SIZE,
-    );
-
-    let anyError = false;
-    await Promise.all(
-      batches.map(async (batch) => {
-        let results: TranslationResult[];
-        try {
-          results = await translateBatchViaBackground(batch);
-        } catch (err) {
-          console.warn('[english-agent] batch translate failed', err);
-          for (const b of batch) {
-            const el = elementById.get(b.id);
-            if (el) {
-              const rm = restoreMapById.get(b.id) ?? new Map();
-              injectTranslation(
-                el,
-                { id: b.id, zh: '', source: 'llm', error: String(err) },
-                () => retryBlock(b.id, el, b.text, rm),
-              );
-            }
-            setProgress((p) => ({ ...p, done: p.done + 1 }));
-          }
-          anyError = true;
-          return;
-        }
-        for (const r of results) {
-          const el = elementById.get(r.id);
-          if (!el) continue;
-          if (r.error) anyError = true;
-          const rm = restoreMapById.get(r.id) ?? new Map();
-          const restored: TranslationResult = r.zh ? { ...r, zh: restorePreserves(r.zh, rm) } : r;
-          injectTranslation(el, restored, () =>
-            retryBlock(r.id, el, textById.get(r.id) ?? '', rm),
-          );
-          setProgress((p) => ({ ...p, done: p.done + 1 }));
-        }
-      }),
-    );
-
-    update(anyError ? 'error' : 'translated');
+    update('active');
+    orchestrator.start(blocks, {
+      onProgress: () => setProgress((p) => ({ ...p, done: p.done + 1 })),
+    });
   }
 
   return <FabButton status={status} progress={progress} onClick={handleClick} />;
@@ -424,22 +488,21 @@ function FabButton({
   onClick: () => void;
 }) {
   const label = (() => {
-    if (status === 'translating') {
-      return progress.total > 0 ? `翻译中 ${progress.done}/${progress.total}` : '翻译中…';
-    }
-    if (status === 'translated') return '撤销翻译';
-    if (status === 'error') return '部分失败，撤销';
-    return '翻译全文';
+    if (status === 'idle') return '翻译全文';
+    // active：done 持续涨，total 是抽出的全部 block 数。done<total 说明还有
+    // 没进过视口的块；done===total 说明所有块都翻完了
+    if (progress.total === 0) return '撤销翻译';
+    return progress.done >= progress.total
+      ? '撤销翻译'
+      : `撤销翻译 ${progress.done}/${progress.total}`;
   })();
 
-  const Icon =
-    status === 'translating' ? Loader2 : status === 'translated' || status === 'error' ? X : Languages;
+  const Icon = status === 'active' ? X : Languages;
 
   return (
     <button
       type="button"
       onClick={onClick}
-      disabled={status === 'translating'}
       style={{
         position: 'fixed',
         bottom: 20,
@@ -452,20 +515,15 @@ function FabButton({
         fontWeight: 500,
         borderRadius: 24,
         border: 'none',
-        cursor: status === 'translating' ? 'default' : 'pointer',
+        cursor: 'pointer',
         boxShadow: '0 6px 20px rgba(0,0,0,0.35)',
         display: 'inline-flex',
         alignItems: 'center',
         gap: 6,
-        opacity: status === 'translating' ? 0.85 : 1,
       }}
     >
-      <Icon
-        size={14}
-        style={status === 'translating' ? { animation: 'eag-spin 1s linear infinite' } : undefined}
-      />
+      <Icon size={14} />
       {label}
-      <style>{`@keyframes eag-spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}`}</style>
     </button>
   );
 }
