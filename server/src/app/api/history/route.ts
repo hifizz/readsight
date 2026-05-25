@@ -20,9 +20,9 @@
  *
  * 当前单用户本期不带 user_id 过滤，等加身份层再补。
  */
-import { sql, desc, lt } from 'drizzle-orm';
+import { sql, desc, lt, inArray } from 'drizzle-orm';
 import { db } from '@/db/client';
-import { encounterEvents } from '@/db/schema';
+import { encounterEvents, selectionContexts } from '@/db/schema';
 
 export const maxDuration = 10;
 export const dynamic = 'force-dynamic';
@@ -54,15 +54,35 @@ export async function GET(req: Request) {
     const items = rows.slice(0, limit);
     const nextCursor = rows.length > limit ? items[items.length - 1].lastTs : null;
 
+    // 第二趟：把每个 lastContextRef 对应的 sentence / url 一次性拉回，给前端
+    // RecordCard 渲染"高亮窗口 + 域名"。两次查询，比 SQL CTE 简单。
+    const refs = items.map((r) => r.lastContextRef).filter(Boolean) as string[];
+    const ctxRows = refs.length
+      ? await db
+          .select({
+            id: selectionContexts.id,
+            sentence: selectionContexts.sentence,
+            url: selectionContexts.url,
+          })
+          .from(selectionContexts)
+          .where(inArray(selectionContexts.id, refs))
+      : [];
+    const ctxById = new Map(ctxRows.map((c) => [c.id, c]));
+
     return Response.json({
-      items: items.map((r) => ({
-        itemKey: r.itemKey,
-        lastSurfaceForm: r.lastSurfaceForm,
-        lastTs: r.lastTs,
-        lastContextRef: r.lastContextRef,
-        totalCount: r.totalCount,
-        eventTypes: r.eventTypes,
-      })),
+      items: items.map((r) => {
+        const ctx = r.lastContextRef ? ctxById.get(r.lastContextRef) : null;
+        return {
+          itemKey: r.itemKey,
+          lastSurfaceForm: r.lastSurfaceForm,
+          lastTs: r.lastTs,
+          lastContextRef: r.lastContextRef,
+          totalCount: r.totalCount,
+          eventTypes: r.eventTypes,
+          lastSentence: ctx?.sentence ?? null,
+          lastUrl: ctx?.url ?? null,
+        };
+      }),
       nextCursor,
     });
   } catch (err) {

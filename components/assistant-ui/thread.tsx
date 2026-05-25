@@ -49,49 +49,92 @@ import {
 import type { FC, ReactNode } from "react";
 
 /**
- * `composerPrefix`: 可选 slot，渲染在输入框上方（sticky 底部一起 pin），
- * 用来放 SuggestionBar 等"代用户发"快捷按钮 —— PRD §8.1 弹窗轻路径 in-sidepanel 版。
+ * Slots:
+ *   - `composerPrefix`: 渲染在输入框上方（跟 composer 一起 sticky 在底部）。
+ *   - `viewportPrefix`: 渲染在 scroll 区里、所有消息之前。随线程滚动（不固定）。
+ *      用来放 WordCard / 词典卡 —— 它是开场答案，聊开后该让位给对话。
+ *   - `welcome`: 当 thread 为空时替换默认 "Hello there!" 欢迎语。
+ *      sidepanel 用它放种子追问条（"想就 changed 接着问点什么？"）。
  */
 export interface ThreadProps {
   composerPrefix?: ReactNode;
+  viewportPrefix?: ReactNode;
+  welcome?: ReactNode;
 }
 
-export const Thread: FC<ThreadProps> = ({ composerPrefix }) => {
+export const Thread: FC<ThreadProps> = ({
+  composerPrefix,
+  viewportPrefix,
+  welcome,
+}) => {
+  /*
+   * 布局：composer 不在 scroll 区里。
+   *
+   * 之前用 assistant-ui 默认结构（composer 是 ViewportFooter，sticky bottom-0 +
+   * mt-auto 放在 Viewport 内部）。两个症状：
+   *   1) 内容短的时候 mt-auto 撑出几百 px 空白把 composer 推到底，message
+   *      跟 composer 之间挂空气；
+   *   2) 内容长滚到底，sticky 的 composer 会盖住末段消息——视觉上"输入框
+   *      遮住聊天内容"。
+   *
+   * 改成：Viewport 只装 scroll 内容，composer 作为 Viewport 的兄弟节点贴在
+   * 下面。Viewport 用 flex-1 抢空间；composer 区是 shrink-0。
+   * 一个 `pb-6` 的尾部留白保证最后一条消息和 composer 之间有呼吸感。
+   */
   return (
     <ThreadPrimitive.Root
-      className="aui-root aui-thread-root @container flex h-full flex-col bg-background"
+      className="aui-root aui-thread-root @container flex h-full min-h-0 flex-col bg-background"
       style={{
         ["--thread-max-width" as string]: "44rem",
-        ["--composer-radius" as string]: "24px",
+        ["--composer-radius" as string]: "20px",
         ["--composer-padding" as string]: "10px",
       }}
     >
+      {/*
+       * 不用 turnAnchor="top"：那个模式会在 scroll content 末端注入一个
+       * "reserve" 占位条（mountTopAnchorReserve），保证最后一条 user 消息
+       * 永远能滚到 viewport 顶部。在窄面板里答复一般就一两屏，reserve 反而
+       * 在底部撑出一大块空白，体感是"输入框上方挂着一片空"。
+       * 改回默认（bottom anchor）：新消息追加在下面，viewport 自然滚到底，
+       * 没有 reserve 浪费。
+       */}
       <ThreadPrimitive.Viewport
-        turnAnchor="top"
         data-slot="aui_thread-viewport"
-        className="relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth"
+        className="relative flex min-h-0 flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth"
       >
-        <div className="mx-auto flex w-full max-w-(--thread-max-width) flex-1 flex-col px-4 pt-4">
+        {/*
+         * inner div 保留 flex-1 + flex-col：
+         *   - 内容短：inner div 撑到 viewport 高度，welcome 里的 my-auto/grow 才能拿到
+         *     空间做垂直居中（Hello there 不再贴顶）
+         *   - 内容长：inner div 被消息撑大，超过 viewport 时 Viewport 滚动
+         * composer 已经搬出 Viewport，这里再用 flex-1 不会重蹈 mt-auto 撑出空白的覆辙。
+         */}
+        <div className="mx-auto flex w-full max-w-(--thread-max-width) flex-1 flex-col px-3.5 pt-3 pb-6">
+          {viewportPrefix}
+
           <AuiIf condition={(s) => s.thread.isEmpty}>
-            <ThreadWelcome />
+            {welcome ?? <ThreadWelcome />}
           </AuiIf>
 
           <div
             data-slot="aui_message-group"
-            className="mb-10 flex flex-col gap-y-8 empty:hidden"
+            className="mt-3 flex flex-col gap-y-5 empty:hidden"
           >
             <ThreadPrimitive.Messages>
               {() => <ThreadMessage />}
             </ThreadPrimitive.Messages>
           </div>
-
-          <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 mt-auto flex flex-col gap-2 overflow-visible rounded-t-(--composer-radius) bg-background pb-4 md:pb-6">
-            <ThreadScrollToBottom />
-            {composerPrefix}
-            <Composer />
-          </ThreadPrimitive.ViewportFooter>
         </div>
       </ThreadPrimitive.Viewport>
+
+      <div
+        data-slot="aui_composer-region"
+        className="relative flex shrink-0 flex-col gap-2 bg-background px-3.5 pt-2 pb-3"
+      >
+        <ThreadScrollToBottom />
+        {composerPrefix}
+        <Composer />
+      </div>
     </ThreadPrimitive.Root>
   );
 };
@@ -240,6 +283,24 @@ const MessageError: FC = () => {
   );
 };
 
+const ThinkingShimmer: FC = () => {
+  // 同 ReasoningTrigger 的写法：原字在底，shimmer 字在上叠 absolute，
+  // tw-shimmer 的 highlight 会扫过去。motion-reduce 用户不动画。
+  return (
+    <div className="py-1 text-sm text-muted-foreground">
+      <span className="relative inline-block leading-none">
+        <span>思考中…</span>
+        <span
+          aria-hidden
+          className="shimmer pointer-events-none absolute inset-0 motion-reduce:animate-none"
+        >
+          思考中…
+        </span>
+      </span>
+    </div>
+  );
+};
+
 const AssistantMessage: FC = () => {
   // reserves space for action bar and compensates with `-mb` for consistent msg spacing
   // keeps hovered action bar from shifting layout (autohide doesn't support absolute positioning well)
@@ -257,6 +318,19 @@ const AssistantMessage: FC = () => {
         data-slot="aui_assistant-message-content"
         className="wrap-break-word px-2 text-foreground leading-relaxed"
       >
+        {/*
+         * 用户消息发上去之后到第一段 part 出现之间会有空隙，奶白屏太冷清。
+         * 这条 shimmer "思考中…" 在 message.parts 为空且 status 还 running
+         * 时显示，第一个 part（哪怕是 reasoning）落进来就消失。
+         */}
+        <AuiIf
+          condition={(s) =>
+            s.message.status?.type === "running" && s.message.parts.length === 0
+          }
+        >
+          <ThinkingShimmer />
+        </AuiIf>
+
         <MessagePrimitive.GroupedParts
           groupBy={(part) => {
             if (part.type === "reasoning")
@@ -274,11 +348,23 @@ const AssistantMessage: FC = () => {
                 return <div data-slot="aui_chain-of-thought">{children}</div>;
               case "group-reasoning": {
                 const running = part.status.type === "running";
+                // 默认收起：reasoning 是过程性产物，不该把第一屏占满。
+                // ghost 变体去掉外层框线和背景；ReasoningText 用左侧细线 +
+                // 缩进，视觉上像一段引用，跟最终答案区分但不再喧宾夺主。
                 return (
-                  <ReasoningRoot defaultOpen={running}>
-                    <ReasoningTrigger active={running} />
+                  <ReasoningRoot
+                    defaultOpen={false}
+                    variant="ghost"
+                    className="my-1"
+                  >
+                    <ReasoningTrigger
+                      active={running}
+                      className="gap-1.5 text-xs"
+                    />
                     <ReasoningContent aria-busy={running}>
-                      <ReasoningText>{children}</ReasoningText>
+                      <ReasoningText className="ms-1 max-h-56 border-l border-border ps-3 pt-1.5 pb-1 text-xs leading-[1.55] text-muted-foreground/90">
+                        {children}
+                      </ReasoningText>
                     </ReasoningContent>
                   </ReasoningRoot>
                 );

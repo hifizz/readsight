@@ -1,15 +1,17 @@
 /**
  * RecordsList —— Sidepanel "学习记录" tab 内容。
  *
- * 拉 `/api/history`，按 itemKey 聚合的列表卡片：surfaceForm 大字 +
- * lemma#pos 小字 + 次数 badge + 最近时间相对值 + 事件类型 chips。
+ * 拉 /api/history，按 itemKey 聚合的列表卡片。每张卡：
+ *   - 顶行：lemma + (surfaceForm) + 时间（右上角）
+ *   - 中间：语境窗口（高亮 surfaceForm）—— 这是卡的真正营养
+ *   - 底栏：域名 + 次数/事件 chip + "回原文"外链按钮
  *
- * 点条目触发 onSelect(record)，由 App.tsx 接住 → 切回 Chat tab +
- * 加载对应 SelectionContext 到顶部语境卡。
+ * 点条目 = 进入 chat tab + 加载对应 SelectionContext（App.tsx 接住）。
+ * 视觉对齐 docs/RecordCard.jsx。
  */
 import { useEffect, useState } from 'react';
-import { Loader2, BookOpen } from 'lucide-react';
-import { Badge } from '@/components/ui/badge';
+import { Loader2, BookOpen, Globe, ExternalLink } from 'lucide-react';
+import { windowAround } from '@/components/context-card';
 
 export interface HistoryRecord {
   itemKey: string;
@@ -18,12 +20,33 @@ export interface HistoryRecord {
   lastContextRef: string;
   totalCount: number;
   eventTypes: string[];
+  /** 选区所在句子（M3 后端 LEFT JOIN selection_contexts 返回）；缺失时不渲染高亮窗口。 */
+  lastSentence?: string | null;
+  /** 原文 URL，用来抽 domain；缺失时显示 itemKey 的来源 fallback。 */
+  lastUrl?: string | null;
 }
+
+const HL_BG = '#fdeeb8';
+const HL_TEXT = '#5a4300';
+
+const OUTCOME_TAG_LABEL: Record<string, { label: string; bg: string; fg: string }> = {
+  still_unsure: { label: '待巩固', bg: '#faeeda', fg: '#854f0b' },
+  understood: { label: '已懂', bg: '#e1f5ee', fg: '#0f6e56' },
+  incorrect: { label: '答错', bg: '#fcebeb', fg: '#a32d2d' },
+  correct: { label: '答对', bg: '#e1f5ee', fg: '#0f6e56' },
+};
+
+const EVENT_TYPE_LABEL: Record<string, string> = {
+  lookup: '查询',
+  quick: '快捷',
+  deepchat: '深聊',
+  passive_reencounter: '复现',
+};
 
 interface RecordsListProps {
   backendUrl: string;
   onSelect: (record: HistoryRecord) => void;
-  /** 用于触发刷新（每次切到 Records tab 时 +1）。 */
+  /** 每次切到 Records tab 时 +1，触发重新拉。 */
   refreshToken?: number;
 }
 
@@ -76,14 +99,12 @@ export function RecordsList({ backendUrl, onSelect, refreshToken = 0 }: RecordsL
   }
   if (state.kind === 'error') {
     return (
-      <div className="p-3 text-xs text-destructive">
-        加载失败：{state.message}
-      </div>
+      <div className="p-3 text-xs text-destructive">加载失败：{state.message}</div>
     );
   }
 
   return (
-    <div className="flex flex-col gap-1.5 p-2">
+    <div className="flex flex-col gap-2 px-3 py-3">
       {state.items.map((r) => (
         <RecordCard key={r.itemKey} record={r} onSelect={onSelect} />
       ))}
@@ -98,56 +119,105 @@ function RecordCard({
   record: HistoryRecord;
   onSelect: (r: HistoryRecord) => void;
 }) {
-  const [lemma, pos] = record.itemKey.split('#');
+  const [lemma] = record.itemKey.split('#');
+  const win = windowAround(record.lastSentence ?? undefined, record.lastSurfaceForm);
+  const domain = record.lastUrl ? extractDomain(record.lastUrl) : null;
+
   return (
     <button
       type="button"
       onClick={() => onSelect(record)}
-      className="group flex flex-col gap-1 rounded-md border bg-card p-2.5 text-left text-xs transition-colors hover:bg-accent"
+      className="group rounded-[11px] border bg-card p-3 text-left transition-colors hover:bg-muted/40"
     >
+      {/* 词 + 时间 */}
       <div className="flex items-baseline justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          <span className="text-sm font-semibold tracking-tight">
-            {record.lastSurfaceForm}
+        <div className="flex min-w-0 items-baseline gap-1.5">
+          <span className="text-[14px] font-semibold tracking-tight text-foreground">
+            {lemma}
           </span>
           {record.lastSurfaceForm !== lemma && (
-            <span className="ml-1.5 text-muted-foreground">
-              ({lemma})
+            <span className="text-[11.5px] text-muted-foreground/80">
+              ({record.lastSurfaceForm})
             </span>
           )}
-          <span className="ml-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
-            {pos}
-          </span>
         </div>
-        <span className="shrink-0 text-[10px] text-muted-foreground">
+        <span className="shrink-0 text-[11px] text-muted-foreground/80">
           {formatRelativeTime(record.lastTs)}
         </span>
       </div>
-      <div className="flex items-center gap-1.5">
-        <Badge variant="secondary" className="h-5 text-[10px]">
-          {record.totalCount} 次
-        </Badge>
-        {record.eventTypes.map((t) => (
-          <Badge
-            key={t}
-            variant="outline"
-            className="h-5 px-1.5 text-[10px] font-normal"
+
+      {/* 语境：开窗 + 高亮 surfaceForm（卡片的真正营养）*/}
+      {win && win.match && (
+        <div className="mt-1.5 line-clamp-2 text-[12.5px] leading-[1.55] text-muted-foreground">
+          {win.lead && '… '}
+          {win.pre}
+          <span
+            className="rounded-[3px] px-[2px] font-semibold"
+            style={{ background: HL_BG, color: HL_TEXT }}
           >
-            {t}
-          </Badge>
-        ))}
+            {win.match}
+          </span>
+          {win.post}
+          {win.trail && ' …'}
+        </div>
+      )}
+
+      {/* 细 meta：域名 + 事件 chip + 回原文 */}
+      <div className="mt-2 flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2">
+          {domain && (
+            <span className="flex min-w-0 items-center gap-1 text-[11px] text-muted-foreground/80">
+              <Globe className="size-3 shrink-0" />
+              <span className="truncate">{domain}</span>
+            </span>
+          )}
+          {renderTags(record)}
+        </div>
+        <span
+          aria-label="回原文"
+          className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground/70 transition-colors group-hover:bg-background group-hover:text-foreground"
+        >
+          <ExternalLink className="size-3.5" />
+        </span>
       </div>
     </button>
   );
 }
 
-/**
- * 简单的"刚刚 / 2h ago / 3d ago"格式化，避免引入 date-fns（~50KB gzip）。
- */
+function renderTags(r: HistoryRecord) {
+  const tags: Array<{ key: string; label: string; outcome?: keyof typeof OUTCOME_TAG_LABEL }> = [
+    { key: 'count', label: `${r.totalCount} 次` },
+  ];
+  for (const t of r.eventTypes) {
+    const label = EVENT_TYPE_LABEL[t] ?? t;
+    tags.push({ key: t, label });
+  }
+  return (
+    <div className="flex shrink-0 items-center gap-1">
+      {tags.map((t) => (
+        <span
+          key={t.key}
+          className="rounded bg-muted px-1.5 py-0.5 text-[10.5px] text-muted-foreground"
+        >
+          {t.label}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function extractDomain(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return url;
+  }
+}
+
 function formatRelativeTime(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
-  if (diff < 60_000) return 'just now';
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
-  return `${Math.floor(diff / 86_400_000)}d ago`;
+  if (diff < 60_000) return '刚刚';
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
+  return `${Math.floor(diff / 86_400_000)} 天前`;
 }

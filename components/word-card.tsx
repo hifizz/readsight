@@ -1,34 +1,23 @@
 /**
  * WordCard —— 单词选区专用的"词典卡"。
  *
- * 何时出现：
- *   sidepanel 检测到 `selection.type === 'word'` 时挂载在 ContextCard 和
- *   assistant-ui Thread 之间。其他选区类型（phrase / sentence / multi）
- *   不渲染这个组件。
+ * 位置：sidepanel scroll 区里、所有消息之前。随线程滚动（不固定），可折叠，
+ * 默认展开。不是消息、不进 LLM —— 它是开场的确定性答案（IPA + 词典义），
+ * 跟 Thread 的语境化解读分工互补。
  *
- * 数据来源：
- *   /api/lookup?word=<surfaceForm>，后端按 PRD §6.2 走 lemma 还原 →
- *   Free Dictionary → LLM 兜底的优先级，前端只消费结果。
+ * 数据来源：/api/lookup？word=<surfaceForm>，PRD §6.2 lemma → Free Dictionary →
+ * LLM 兜底优先级。
  *
- * 与 assistant-ui Thread 的分工：
- *   WordCard = 确定性字典金标准（IPA / 词性 / 本意）。
- *   Thread = LLM 给的"在这一句里的特殊用法"语境化解读。
- *   两者并存，不重叠。后端 system prompt 已经知道这个分工，会主动避开重复词典义。
+ * 视觉对齐 docs/sidepanel-main.jsx 里的 DictCard。
  */
-import { useEffect, useRef, useState } from 'react';
-import { Volume2, Loader2 } from 'lucide-react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Volume2, Loader2, ChevronDown } from 'lucide-react';
 import type { LookupResult, SelectionContext } from '@/lib/messaging';
-import { Button } from '@/components/ui/button';
 
 interface WordCardProps {
-  /** 用户实际选中的形态，例如 "outed"。 */
   surfaceForm: string;
-  /** 后端 base URL，由 sidepanel 传入避免再读一次 env。 */
   backendUrl: string;
-  /**
-   * 当前选区。M2 后端用它 upsert selection_contexts + 落 EncounterEvent。
-   * 不传 = 走 GET 纯查询（不留痕）。
-   */
+  /** 传入则后端 upsert + 落 EncounterEvent；不传走 GET 纯查询。 */
   selectionContext?: SelectionContext;
 }
 
@@ -40,16 +29,35 @@ type State =
 
 export function WordCard({ surfaceForm, backendUrl, selectionContext }: WordCardProps) {
   const [state, setState] = useState<State>({ kind: 'loading' });
-  // surfaceForm 变了就发新请求；用 ref 跟踪上一次的 surfaceForm 把过期响应丢掉。
+  const [open, setOpen] = useState(true);
   const reqIdRef = useRef(0);
+  /**
+   * 切 open 时，先把当前 viewport.scrollTop 记下来，
+   * 用 useLayoutEffect 在新 DOM 落版前一帧把 scrollTop 复位。
+   *
+   * 为什么需要：assistant-ui 的 `turnAnchor="top"` 在用户发过消息之后会
+   * 维持"最近一条 user 消息钉在 viewport 顶端"——card 展开时它上方的
+   * 内容高度变化会触发 ResizeObserver，assistant-ui 的 topAnchor reserve
+   * apply() 重新计算 targetScrollTop，可能把 scrollTop 一把推到底，
+   * 用户的体感就是"点了卡片瞬间跳到底"。
+   *
+   * 我们在 toggle 时显式快照 + 复位，让卡片自己撑开/收起、scroll 不动。
+   * lastScrolledAnchorId 的去重逻辑保证 assistant-ui 不会反向再纠正一次。
+   *
+   * shouldRestoreRef.current = null 表示"本次 render 不需要复位"
+   * （初次挂载、外部状态变化等场景不应跳）。只有 toggle handler 显式
+   * 写入数字时才生效。
+   */
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const pendingScrollTopRef = useRef<number | null>(null);
 
   useEffect(() => {
     const myReq = ++reqIdRef.current;
     setState({ kind: 'loading' });
+    // 新词进来默认展开
+    setOpen(true);
     const ctrl = new AbortController();
 
-    // POST 带 selectionContext 才能让后端 upsert + 落 EncounterEvent。
-    // 没有 selectionContext 时走 GET 纯查询，不留事件。
     const promise = selectionContext
       ? fetch(`${backendUrl}/api/lookup`, {
           method: 'POST',
@@ -57,10 +65,9 @@ export function WordCard({ surfaceForm, backendUrl, selectionContext }: WordCard
           body: JSON.stringify({ word: surfaceForm, selectionContext }),
           signal: ctrl.signal,
         })
-      : fetch(
-          `${backendUrl}/api/lookup?word=${encodeURIComponent(surfaceForm)}`,
-          { signal: ctrl.signal },
-        );
+      : fetch(`${backendUrl}/api/lookup?word=${encodeURIComponent(surfaceForm)}`, {
+          signal: ctrl.signal,
+        });
 
     promise
       .then(async (res) => {
@@ -68,7 +75,7 @@ export function WordCard({ surfaceForm, backendUrl, selectionContext }: WordCard
         return (await res.json()) as LookupResult;
       })
       .then((data) => {
-        if (myReq !== reqIdRef.current) return; // 过期响应丢弃
+        if (myReq !== reqIdRef.current) return;
         if (!data.partsOfSpeech || data.partsOfSpeech.length === 0) {
           setState({ kind: 'empty' });
           return;
@@ -82,32 +89,52 @@ export function WordCard({ surfaceForm, backendUrl, selectionContext }: WordCard
       });
 
     return () => ctrl.abort();
-    // 关键：用 `selectionContext?.id`（字符串）当 dep，不要用整个 selectionContext 对象。
-    // sidepanel 每次 SELECTION_READY 反序列化都是新对象 ref —— 若用对象 ref 当 dep，
-    // 同一个选区每次 re-render 都会重发 /api/lookup，把后端打成死循环。
+    // 用 ctx.id 字符串当 dep；对象 ref 每次反序列化都是新引用，会触发死循环。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [surfaceForm, backendUrl, selectionContext?.id]);
 
+  useLayoutEffect(() => {
+    const pending = pendingScrollTopRef.current;
+    pendingScrollTopRef.current = null;
+    if (pending === null) return;
+    const viewport = rootRef.current?.closest<HTMLElement>(
+      '[data-slot="aui_thread-viewport"]',
+    );
+    if (!viewport) return;
+    // 复位 + 多帧守护：assistant-ui 的 ResizeObserver 是 RAF 调度的，
+    // 单帧复位偶尔会被它后续 apply 覆盖；连刷两帧把 scrollTop 锁住。
+    viewport.scrollTop = pending;
+    requestAnimationFrame(() => {
+      viewport.scrollTop = pending;
+      requestAnimationFrame(() => {
+        viewport.scrollTop = pending;
+      });
+    });
+  }, [open]);
+
+  function toggle() {
+    const viewport = rootRef.current?.closest<HTMLElement>(
+      '[data-slot="aui_thread-viewport"]',
+    );
+    pendingScrollTopRef.current = viewport?.scrollTop ?? null;
+    setOpen((o) => !o);
+  }
+
   if (state.kind === 'loading') {
     return (
-      <div className="border-b bg-card px-3 py-2.5 text-xs text-muted-foreground">
+      <div className="rounded-[10px] border bg-muted/30 px-3 py-2.5 text-xs text-muted-foreground">
         <div className="flex items-center gap-2">
           <Loader2 className="size-3.5 animate-spin" />
-          <span>looking up "{surfaceForm}"…</span>
+          <span>查 "{surfaceForm}" 中…</span>
         </div>
       </div>
     );
   }
-
-  if (state.kind === 'empty') {
-    // 词典 + LLM 都没给出可用条目（极少：可能是符号 / 空白）。静默隐藏。
-    return null;
-  }
-
+  if (state.kind === 'empty') return null;
   if (state.kind === 'error') {
     return (
-      <div className="border-b bg-destructive/5 px-3 py-2 text-xs text-destructive">
-        lookup failed: {state.message}
+      <div className="rounded-[10px] border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+        查询失败：{state.message}
       </div>
     );
   }
@@ -116,56 +143,74 @@ export function WordCard({ surfaceForm, backendUrl, selectionContext }: WordCard
   const ipaText = formatIpa(data.ipa);
 
   return (
-    <div className="border-b bg-card px-3 py-3 text-xs">
-      <div className="mb-1.5 flex items-baseline gap-2">
-        <span className="text-sm font-semibold tracking-tight">{data.lemma}</span>
+    <div ref={rootRef} className="overflow-hidden rounded-[10px] border bg-card">
+      <button
+        type="button"
+        onClick={toggle}
+        className="flex w-full items-center gap-2 bg-muted/30 px-3 py-2.5 text-left transition-colors hover:bg-muted/50"
+        aria-expanded={open}
+      >
+        <span className="text-[15px] font-semibold tracking-tight text-foreground">
+          {data.lemma}
+        </span>
         {data.surfaceForm !== data.lemma && (
-          <span className="text-muted-foreground">
-            (from "<span className="font-medium">{data.surfaceForm}</span>")
+          <span className="text-[11px] text-muted-foreground/80">
+            来自 "{data.surfaceForm}"
           </span>
         )}
         {data.estimated && (
           <span
-            className="ml-auto rounded bg-yellow-500/15 px-1.5 py-0.5 text-[10px] font-medium text-yellow-700 dark:text-yellow-300"
-            title="LLM-estimated (not from dictionary)"
+            className="rounded bg-yellow-500/15 px-1.5 py-0.5 text-[10px] font-medium text-yellow-700 dark:text-yellow-300"
+            title="LLM 估算（非真实词典条目）"
           >
             estimated
           </span>
         )}
-      </div>
+        <span className="ml-auto inline-flex">
+          <ChevronDown
+            className={`size-4 text-muted-foreground transition-transform ${
+              open ? 'rotate-180' : ''
+            }`}
+          />
+        </span>
+      </button>
 
-      <div className="mb-2 flex items-center gap-2">
-        {ipaText && (
-          <span className="font-mono text-muted-foreground">{ipaText}</span>
-        )}
-        <PlayAudioButton word={data.lemma} audioUrl={data.audioUrl} />
-      </div>
-
-      <div className="space-y-1.5">
-        {data.partsOfSpeech.map((p, i) => (
-          <div key={`${p.pos}-${i}`}>
-            <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-              {p.pos}
-            </div>
-            <ol className="ml-3 list-decimal space-y-1 text-foreground">
-              {p.definitions.map((d, j) => (
-                <li key={j} className="leading-snug">
-                  <div>{d.definition}</div>
-                  {d.cn && (
-                    // 中文释义：稍微淡一点的前景色 + 大半字号，让英文是主体、中文是辅助
-                    <div className="text-foreground/75">{d.cn}</div>
-                  )}
-                  {d.example && (
-                    <div className="text-muted-foreground italic">
-                      — {d.example}
-                    </div>
-                  )}
-                </li>
-              ))}
-            </ol>
+      {open && (
+        <div className="px-3 pt-1 pb-3">
+          <div className="mb-3 flex items-center gap-2">
+            {ipaText && (
+              <span className="font-mono text-[12.5px] text-foreground/85">{ipaText}</span>
+            )}
+            <PlayAudioButton word={data.lemma} audioUrl={data.audioUrl} />
           </div>
-        ))}
-      </div>
+
+          {data.partsOfSpeech.map((p, i) => (
+            <div key={`${p.pos}-${i}`} className="mb-3 last:mb-0">
+              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/80">
+                {p.pos}
+              </div>
+              <ol className="space-y-2.5">
+                {p.definitions.map((d, j) => (
+                  <li key={j} className="flex gap-2 text-[12.5px] leading-snug">
+                    <span className="shrink-0 text-muted-foreground/70">{j + 1}.</span>
+                    <div className="min-w-0">
+                      <div className="text-foreground">{d.definition}</div>
+                      {d.cn && (
+                        <div className="mt-[1px] text-foreground/70">{d.cn}</div>
+                      )}
+                      {d.example && (
+                        <div className="mt-0.5 text-[12px] italic text-muted-foreground/80 leading-[1.55]">
+                          — {d.example}
+                        </div>
+                      )}
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -178,17 +223,7 @@ function formatIpa(ipa?: { us?: string; uk?: string }): string {
   return ipa.us ?? ipa.uk ?? '';
 }
 
-/**
- * 优先放词典真人音频（PRD §6.3 tier 1），失败 / 没有则回退浏览器
- * SpeechSynthesis（tier 0，零成本、机械感）。
- */
-function PlayAudioButton({
-  word,
-  audioUrl,
-}: {
-  word: string;
-  audioUrl?: string;
-}) {
+function PlayAudioButton({ word, audioUrl }: { word: string; audioUrl?: string }) {
   const [playing, setPlaying] = useState(false);
 
   function play() {
@@ -196,10 +231,7 @@ function PlayAudioButton({
     if (audioUrl) {
       const audio = new Audio(audioUrl);
       audio.onended = () => setPlaying(false);
-      audio.onerror = () => {
-        // 真人音频加载失败 → tier 0 兜底
-        fallbackSpeak();
-      };
+      audio.onerror = () => fallbackSpeak();
       audio.play().catch(() => fallbackSpeak());
       return;
     }
@@ -219,15 +251,14 @@ function PlayAudioButton({
   }
 
   return (
-    <Button
-      variant="ghost"
-      size="icon"
-      className="size-6"
+    <button
+      type="button"
       onClick={play}
       disabled={playing}
-      aria-label={`Play pronunciation of ${word}`}
+      aria-label={`播放 ${word} 发音`}
+      className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted disabled:opacity-50"
     >
       <Volume2 className={`size-3.5 ${playing ? 'animate-pulse' : ''}`} />
-    </Button>
+    </button>
   );
 }
