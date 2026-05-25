@@ -240,12 +240,16 @@ function extractArticleBlocks(
   }
   const root = cachedArticleRoot ?? findArticleRoot();
 
-  // Rescan 走 text-walker：BLOCK_SELECTOR 只看 p/li/h*，对 React SPA 用
-  // <div> 当段落的站点完全抓不到新内容。text-walker 兜任意标签 +
-  // EXCLUDE_ANCESTOR_SELECTOR 把 nav/aside/footer 仍排除，结果是
-  // "article root 内除噪音容器之外的所有 block-like 元素"。
+  // Rescan 扫整个 document.body —— 不是 cachedArticleRoot。
+  // 原因（TechCrunch 实测验证）：很多站的无限滚动把新文章 append 到
+  // cachedArticleRoot **外面** 的 sibling 容器（甚至直接挂 body），
+  // 限制在 cachedArticleRoot 里走 text-walker 永远扫不到新文章。
+  // 走 body 后，EXCLUDE_ANCESTOR_SELECTOR (nav/aside/footer/comments/...) 仍排除
+  // 噪音；orchestrator.addBlocks 按 id 去重，初始文章块不会被重复翻译；
+  // 代价是"主文章 + 同源相关阅读"会一起被翻，但这正是用户在 infinite
+  // scroll 上想要的行为。
   if (isRescan) {
-    return extractPageBlocks(root, EXCLUDE_ANCESTOR_SELECTOR, MIN_BLOCK_LENGTH);
+    return extractPageBlocks(document.body, EXCLUDE_ANCESTOR_SELECTOR, MIN_BLOCK_LENGTH);
   }
 
   // 初始扫：BLOCK_SELECTOR + Readability allowlist 严格路径（保持精读体验）
