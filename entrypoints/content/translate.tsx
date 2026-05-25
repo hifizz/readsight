@@ -520,9 +520,19 @@ class TranslationOrchestrator {
     this.observer = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
-          if (!entry.isIntersecting) continue;
           const id = entry.target.getAttribute(BLOCK_ID_ATTR);
-          if (id) this.enqueue(id);
+          if (!id) continue;
+          if (entry.isIntersecting) {
+            this.enqueue(id);
+            continue;
+          }
+          // 块不在视口里，但 bottom < 0 表示**在视口上方**（用户已经滚过去了）。
+          // 这种块如果不立即入队，IO 不会再 fire（IO 只在跨过边界时触发），
+          // 永远不被翻译。常见路径：MutationObserver 续翻 debounce 500ms 期间
+          // 用户滚动很快、新文章一加上就被滚过 → rescan addBlocks 时 observe，
+          // 此时块已在视口上方 → 旧逻辑 continue 跳过 → 卡住。
+          // entry.boundingClientRect 由 IO 免费提供，不触发 layout。
+          if (entry.boundingClientRect.bottom < 0) this.enqueue(id);
         }
       },
       { rootMargin: VIEWPORT_ROOT_MARGIN, threshold: 0 },
@@ -537,8 +547,13 @@ class TranslationOrchestrator {
 
   /**
    * 增量追加 blocks —— MutationObserver 检测到 SPA 续渲染时调用。
-   * 已知 id 跳过；已被移出 DOM 的元素跳过；其余 observe + 排队待翻。
-   * 返回真正新增的块数（外部用来更新 total / 决定是否触发 onTotalChange）。
+   * 已知 id 跳过；已被移出 DOM 的元素跳过；其余 observe + 立即入队。
+   *
+   * 为什么直接 enqueue 而不等 IO：IO 只在元素跨越 viewport 边界时 fire。
+   * MutationObserver 续翻 debounce 500ms 内用户可能已经滚过新块的位置
+   * （新块卡在视口上方）；或者新块在视口下方很远（永远等不到用户滚到那）。
+   * 两种 case 旧逻辑都漏。直接 enqueue + flushPending 按视口距离排序，
+   * 远的自然排到后面，等于"视口优先 + 绝不漏块"。
    */
   addBlocks(blocks: ArticleBlock[]): number {
     if (!this.observer) return 0;
@@ -553,6 +568,7 @@ class TranslationOrchestrator {
         status: 'idle',
       });
       this.observer.observe(b.element);
+      this.enqueue(b.id);
       added++;
     }
     return added;
@@ -573,11 +589,14 @@ class TranslationOrchestrator {
   }
 
   /**
-   * 一个 block 进视口 → 攒进 pendingBatch，重置 debounce timer。
+   * 一个 block 进视口 → 攒进 pendingBatch，等首个 debounce 窗口结束统一 flush。
    *
-   * 关键：不再"满 MAX_BATCH_SIZE 立刻 flush"。要等 debounce 到期 / 一组
-   * 视口块都进队再 flushPending，flush 时按到视口距离排序，**视口内 / 离
-   * 视口最近的块优先出队** —— 避免用户滚到中段时还在等顶部翻完。
+   * 关键：debounce timer **只在 pendingBatch 空 → 非空那一刻设一次**，后续
+   * enqueue 不 reset。否则用户长页连续滚动时 IntersectionObserver 不停 enqueue
+   * → 每次都把 timer 推后 BATCH_DEBOUNCE_MS → flushPending 永远等不到一个静
+   * 默窗口（必须停下来不滚才能触发），队列尾部累积几十块永远派不出去。
+   * 改成不 reset 后，BATCH_DEBOUNCE_MS 变成"距首块入队的最大延迟"，期间所有
+   * 入队的块自动 coalesce 进同一次 flush —— 既保证持续进度也保留 coalescing。
    */
   private enqueue(id: string): void {
     const block = this.blocks.get(id);
@@ -585,7 +604,7 @@ class TranslationOrchestrator {
     block.status = 'pending';
     this.pendingBatch.push(id);
 
-    if (this.batchTimer) clearTimeout(this.batchTimer);
+    if (this.batchTimer) return; // 已有 timer 在跑，让它按时 fire
     this.batchTimer = setTimeout(() => this.flushPending(), BATCH_DEBOUNCE_MS);
   }
 
