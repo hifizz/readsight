@@ -292,70 +292,96 @@ function SelectionPill() {
   if (popupOpen || !snapshot) return null;
 
   const { ctx, rect } = snapshot;
-  // pill 用 viewport 坐标 + position: fixed，与 popup 一致 —— 跟 WXT shadowHost
-  // 在 body 末尾的位置脱钩。代价：滚动时 pill 不跟选区（用户重选即可重定位）。
-  const top = rect.top - 36;
-  const left = rect.right + 6;
+  // 视觉规则（来自 docs/lookup.jsx）：pill 居中浮在选区上方，44px gap，
+  // 视口边缘留 60px 安全区防贴边。translateX(-50%) 把 left 当中点用。
+  const vw = window.innerWidth;
+  const left = Math.min(Math.max(rect.left + rect.width / 2, 60), vw - 60);
+  const top = Math.max(rect.top - 44, 8);
 
   return (
-    <button
-      type="button"
-      // mousedown 默认会让浏览器清掉当前 selection；阻止它，click 仍能正常触发。
-      onMouseDown={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-      }}
-      onClick={() => {
-        // 单词选区：记下 lemma，避免本会话再扫到时误报 passive_reencounter
-        try {
-          if (ctx.selection.type === 'word') {
-            activelyQueriedLemmas.add(resolveLemma(ctx.selection.text));
+    <>
+      <style>{PILL_CSS}</style>
+      <button
+        type="button"
+        className="eag-pill"
+        // mousedown 默认会让浏览器清掉当前 selection；阻止它，click 仍能正常触发。
+        onMouseDown={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        }}
+        onClick={() => {
+          try {
+            if (ctx.selection.type === 'word') {
+              activelyQueriedLemmas.add(resolveLemma(ctx.selection.text));
+            }
+          } catch (err) {
+            console.warn('[english-agent] resolveLemma in pill click threw', err);
           }
-        } catch (err) {
-          console.warn('[english-agent] resolveLemma in pill click threw', err);
-        }
-        // PRD §8.1 轻路径：pill 点击展开 popup。viewport 坐标直接传，无 scroll 偏移
-        openPopup(ctx, {
-          rect: {
-            top: rect.top,
-            left: rect.left,
-            right: rect.right,
-            bottom: rect.bottom,
-          },
-        });
-        setSnapshot(null);
-      }}
-      aria-label="Look up with English Agent"
-      title="Look up"
-      style={{
-        position: 'fixed',
-        top,
-        left,
-        // 圆形小按钮：icon + 单短词 "Look up"，nowrap 杜绝多行
-        padding: '5px 11px',
-        height: 28,
-        background: '#111',
-        color: '#fff',
-        fontFamily: 'system-ui, -apple-system, sans-serif',
-        fontSize: 12,
-        fontWeight: 500,
-        lineHeight: 1,
-        letterSpacing: 0.2,
-        whiteSpace: 'nowrap',
-        borderRadius: 14,
-        border: 'none',
-        cursor: 'pointer',
-        boxShadow: '0 4px 14px rgba(0,0,0,0.30), 0 0 0 1px rgba(255,255,255,0.06) inset',
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: 5,
-      }}
-    >
-      <Sparkles size={13} strokeWidth={2.25} />
-      Look up
-    </button>
+          openPopup(ctx, {
+            rect: {
+              top: rect.top,
+              left: rect.left,
+              right: rect.right,
+              bottom: rect.bottom,
+            },
+          });
+          setSnapshot(null);
+        }}
+        aria-label="Look up with English Agent"
+        title="Look up"
+        style={{ top, left }}
+      >
+        <Sparkles size={13} strokeWidth={2.25} className="eag-pill-icon" />
+        Look up
+      </button>
+    </>
   );
 }
+
+/**
+ * Pill 的 scoped CSS（lookup.jsx 视觉）。
+ *   - 圆角 999px、黑底白字、双层投影
+ *   - translateX(-50%) 把 left 作锚点中线，加 spring-in 入场动画
+ *   - :hover 微亮 / :active 缩 .96，扣回 translateX 不丢
+ *   - icon 用淡绿点缀（lookup.jsx hint 里同款 #0b8f5a 系），跟翻译 FAB 色系区分
+ */
+const PILL_CSS = `
+.eag-pill {
+  position: fixed;
+  z-index: 2147483646;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: #101012;
+  color: #fff;
+  border: none;
+  border-radius: 999px;
+  padding: 8px 14px 8px 12px;
+  font-family: 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: .2px;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow:
+    0 6px 20px rgba(16, 16, 18, .28),
+    0 1px 3px rgba(16, 16, 18, .4),
+    0 0 0 1px rgba(255, 255, 255, .06) inset;
+  transform: translateX(-50%);
+  transform-origin: 50% 120%;
+  animation: eag-pill-in .16s cubic-bezier(.2, .8, .3, 1.1) both;
+  -webkit-font-smoothing: antialiased;
+}
+.eag-pill:hover { background: #26262a; }
+.eag-pill:active { transform: translateX(-50%) scale(.96); }
+.eag-pill-icon { color: #6ddca0; flex: none; }
+
+@keyframes eag-pill-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(5px) scale(.92); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0)   scale(1);   }
+}
+`;
 
 // 文章正文里"句子级"块的标签。PRD §8.2 命门一的"块"= 这里 closest() 命中的最近祖先。
 // 通用适配器，不挂任何站点白名单；如果某些站结构特别奇怪需要定制，再走 PRD §3.2 的站点适配器机制扩这个列表。
