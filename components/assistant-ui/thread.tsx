@@ -46,9 +46,17 @@ import {
   RefreshCwIcon,
   SquareIcon,
 } from "lucide-react";
-import type { FC } from "react";
+import type { FC, ReactNode } from "react";
 
-export const Thread: FC = () => {
+/**
+ * `composerPrefix`: 可选 slot，渲染在输入框上方（sticky 底部一起 pin），
+ * 用来放 SuggestionBar 等"代用户发"快捷按钮 —— PRD §8.1 弹窗轻路径 in-sidepanel 版。
+ */
+export interface ThreadProps {
+  composerPrefix?: ReactNode;
+}
+
+export const Thread: FC<ThreadProps> = ({ composerPrefix }) => {
   return (
     <ThreadPrimitive.Root
       className="aui-root aui-thread-root @container flex h-full flex-col bg-background"
@@ -77,8 +85,9 @@ export const Thread: FC = () => {
             </ThreadPrimitive.Messages>
           </div>
 
-          <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 mt-auto flex flex-col gap-4 overflow-visible rounded-t-(--composer-radius) bg-background pb-4 md:pb-6">
+          <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 mt-auto flex flex-col gap-2 overflow-visible rounded-t-(--composer-radius) bg-background pb-4 md:pb-6">
             <ThreadScrollToBottom />
+            {composerPrefix}
             <Composer />
           </ThreadPrimitive.ViewportFooter>
         </div>

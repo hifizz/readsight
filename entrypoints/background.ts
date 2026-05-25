@@ -14,7 +14,11 @@
  *   - 不要在 SW 全局变量里存任何"用户状态"
  *   - 一切需要持久的瞬时状态写入 chrome.storage.session（key 即可寻址）
  */
-import type { BackgroundMessage, SelectionContext } from '@/lib/messaging';
+import type {
+  AskWithSelectionPayload,
+  BackgroundMessage,
+  SelectionContext,
+} from '@/lib/messaging';
 
 const BACKEND = import.meta.env.WXT_BACKEND_URL ?? 'http://localhost:4010';
 const STORAGE_KEY_LATEST = 'english-agent:latest-selection-id';
@@ -170,24 +174,28 @@ async function handleHighlightRequest(payload: {
 }
 
 async function handleAskWithSelection(
-  ctx: SelectionContext,
+  payload: AskWithSelectionPayload,
   _sender: chrome.runtime.MessageSender,
 ) {
   // sidePanel.open() 已经在 onMessage 顶部同步分支里发射了 —— 那个分支
   // 必须无 await 才能保住 Chrome MV3 的 user gesture，这里就专注做剩下
   // 两件可以 async 的事：存 storage + 转发 SELECTION_READY。
 
+  const { ctx } = payload;
+
   // 双键：用 id 索引完整 SelectionContext + 一个 "latest" 指针。
   // 后者让 sidepanel 启动时一行 get 就能拿到"最近一次选区"做兜底恢复。
+  // payload 里的 actionTag/initialMessage 也一起存：sidepanel 启动晚于 ASK
+  // 时（user gesture 第一次开 sidepanel）listener 没挂上，靠 storage 兜底。
   await chrome.storage.session.set({
-    [STORAGE_KEY_PREFIX + ctx.id]: ctx,
+    [STORAGE_KEY_PREFIX + ctx.id]: payload,
     [STORAGE_KEY_LATEST]: ctx.id,
   });
 
   // 推给 sidepanel。如果 sidepanel 刚被 open 还没挂载完，listener 还没注册，
   // sendMessage 会抛 "Could not establish connection" —— 没关系，sidepanel
   // 启动时也会主动读 session storage 兜底。
-  const msg: BackgroundMessage = { type: 'SELECTION_READY', payload: ctx };
+  const msg: BackgroundMessage = { type: 'SELECTION_READY', payload };
   try {
     await chrome.runtime.sendMessage(msg);
   } catch {

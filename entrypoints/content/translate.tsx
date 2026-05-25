@@ -17,6 +17,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Languages, X, ChevronDown } from 'lucide-react';
 import { Readability, isProbablyReaderable } from '@mozilla/readability';
 import type { BackgroundMessage, TranslationResult } from '@/lib/messaging';
+import { useDraggable } from '@/lib/use-draggable';
 
 const BLOCK_SELECTOR = 'p, li, blockquote, h1, h2, h3, h4, h5, h6, dd';
 /** 文章正文容器选择器 —— h1 / 内嵌 header 在这种容器内才豁免外部过滤 */
@@ -842,96 +843,18 @@ function notifyExternalListeners(status: FabStatus): void {
 }
 
 const FAB_POSITION_KEY = 'english-agent:fab-pos';
-const DRAG_THRESHOLD_PX = 5;
-
-interface FabPosition {
-  /** 距视口右下角的偏移；用 right/bottom 让窗口缩放后仍贴边 */
-  right: number;
-  bottom: number;
-}
-const DEFAULT_FAB_POSITION: FabPosition = { right: 20, bottom: 20 };
 
 export function TranslateFab() {
   const s = useSyncExternalStore(subscribeModuleState, getModuleState, getModuleState);
-  const [pos, setPos] = useState<FabPosition>(DEFAULT_FAB_POSITION);
   const [menuOpen, setMenuOpen] = useState(false);
-  const dragRef = useRef<{
-    startX: number;
-    startY: number;
-    startRight: number;
-    startBottom: number;
-    moved: boolean;
-  } | null>(null);
-  /**
-   * mouseup 时若刚发生过拖拽，把这个置 true；onClick 读到后吞掉本次点击并清零。
-   * dragRef 在 mouseup 里就 null（避免遗留状态），但 click 需要知道"刚拖过"，
-   * 所以用独立 ref 跨越 mouseup → click 的事件边界。
-   */
-  const wasDraggedRef = useRef(false);
-
-  // 启动时读持久化位置
-  useEffect(() => {
-    chrome.storage.local.get(FAB_POSITION_KEY).then((res) => {
-      const saved = res[FAB_POSITION_KEY] as FabPosition | undefined;
-      if (saved) setPos(saved);
-    });
-  }, []);
-
-  // 全局 mousemove / mouseup：拖拽中
-  useEffect(() => {
-    function onMove(e: MouseEvent) {
-      const drag = dragRef.current;
-      if (!drag) return;
-      const dx = e.clientX - drag.startX;
-      const dy = e.clientY - drag.startY;
-      if (!drag.moved && Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return;
-      drag.moved = true;
-      // 用 right/bottom 反向：鼠标右移 → right 减小
-      setPos({
-        right: Math.max(0, drag.startRight - dx),
-        bottom: Math.max(0, drag.startBottom - dy),
-      });
-    }
-    function onUp() {
-      const drag = dragRef.current;
-      if (!drag) return;
-      dragRef.current = null;
-      if (drag.moved) {
-        // 标记给紧随的 click 看 —— 拖过了，别把这次 click 当切换翻译
-        wasDraggedRef.current = true;
-        // 拖完保存位置
-        setPos((current) => {
-          chrome.storage.local.set({ [FAB_POSITION_KEY]: current }).catch(() => {});
-          return current;
-        });
-      }
-    }
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
-    return () => {
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
-    };
-  }, []);
-
-  function onMouseDown(e: React.MouseEvent) {
-    // 只响应主键
-    if (e.button !== 0) return;
-    // 新一次操作，清掉上次可能没消费掉的 wasDragged（例如拖出按钮外松手没派发 click）
-    wasDraggedRef.current = false;
-    dragRef.current = {
-      startX: e.clientX,
-      startY: e.clientY,
-      startRight: pos.right,
-      startBottom: pos.bottom,
-      moved: false,
-    };
-  }
+  const drag = useDraggable({
+    initial: { x: 20, y: 20 },
+    anchor: 'bottom-right',
+    persistKey: FAB_POSITION_KEY,
+  });
 
   function onClick(e: React.MouseEvent) {
-    // mouseup 已在 dragRef null 之前把"刚拖过"信号写到 wasDraggedRef
-    if (wasDraggedRef.current) {
-      wasDraggedRef.current = false;
+    if (drag.consumeDragClick()) {
       e.preventDefault();
       e.stopPropagation();
       return;
@@ -954,9 +877,9 @@ export function TranslateFab() {
   return (
     <FabButton
       status={s.status}
-      pos={pos}
+      positionStyle={drag.positionStyle()}
       menuOpen={menuOpen}
-      onMouseDown={onMouseDown}
+      onMouseDown={drag.onMouseDown}
       onClick={onClick}
       onChevronClick={(e) => {
         e.stopPropagation();
@@ -970,7 +893,7 @@ export function TranslateFab() {
 
 function FabButton({
   status,
-  pos,
+  positionStyle,
   menuOpen,
   onMouseDown,
   onClick,
@@ -979,7 +902,7 @@ function FabButton({
   onPickMode,
 }: {
   status: FabStatus;
-  pos: FabPosition;
+  positionStyle: Record<string, number>;
   menuOpen: boolean;
   onMouseDown: (e: React.MouseEvent) => void;
   onClick: (e: React.MouseEvent) => void;
@@ -995,8 +918,7 @@ function FabButton({
     <div
       style={{
         position: 'fixed',
-        bottom: pos.bottom,
-        right: pos.right,
+        ...positionStyle,
         zIndex: 2147483647,
         display: 'inline-flex',
         alignItems: 'center',

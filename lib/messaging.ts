@@ -28,9 +28,32 @@ export interface SelectionContext {
   };
 }
 
+/**
+ * popup 快捷按钮 + 自由输入对应的 actionTag（PRD §8.1）。
+ * 跟 `server/src/lib/action-tags.ts` 同步；改这里时记得同步那边。
+ */
+export type ActionTag =
+  | 'meaning'
+  | 'pronunciation'
+  | 'sentence-translate'
+  | 'usage'
+  | 'translate'
+  | 'grammar'
+  | 'rewrite'
+  | 'hard-parts';
+
+/** popup → background → sidepanel 的语境投递；可附带"代用户发"的指令 */
+export interface AskWithSelectionPayload {
+  ctx: SelectionContext;
+  /** 代用户按 actionTag 发一条消息（popup 4 个快捷按钮用） */
+  actionTag?: ActionTag;
+  /** 代用户发一条自由文本消息（popup 输入框 + Enter / 深聊用） */
+  initialMessage?: string;
+}
+
 export type BackgroundMessage =
-  | { type: 'ASK_WITH_SELECTION'; payload: SelectionContext }
-  | { type: 'SELECTION_READY'; payload: SelectionContext }
+  | { type: 'ASK_WITH_SELECTION'; payload: AskWithSelectionPayload }
+  | { type: 'SELECTION_READY'; payload: AskWithSelectionPayload }
   /** Content script 扫描发现的被动重逢命中（PRD §5.2）；background 转发到 /api/encounter */
   | { type: 'PASSIVE_HITS'; payload: Array<{ surfaceForm: string; lemma: string }> }
   /** Sidepanel 点 records 条目 → 让 background 找到原文 tab 触发高亮（PRD §8.3） */

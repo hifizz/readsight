@@ -1,32 +1,46 @@
 /**
- * 划词轻路径 popup（PRD §8.1）—— Phase 1 外壳。
+ * 划词轻路径 popup（PRD §7.2 / §8.1）—— launcher 版。
  *
- * 当前实现的只是结构 + 状态机：
- *   - 选区类型分支按钮组渲染（4 个 / 类型）
- *   - 即时结果区占位
- *   - 输入框 + 深聊按钮占位
- *   - 模块级 popupState：openPopup(ctx, anchor) / closePopup() / 订阅
+ * 用户决策：popup 只做"触发器"，所有实际对话发生在 sidepanel。
+ *   - 4 个 actionTag 按钮 → ASK_WITH_SELECTION { ctx, actionTag } →
+ *     sidepanel 自动替用户发对应消息
+ *   - 深聊按钮 / Enter → ASK_WITH_SELECTION { ctx, initialMessage? } →
+ *     sidepanel 打开等用户输入（带 input 文字就自动发）
+ *   - 发音按钮特殊：Tier 0 = window.speechSynthesis 直发，不开 sidepanel
+ *     （音频播放不打断阅读，无需进侧边栏）
  *
- * 还没接的（Phase 2-4）：
- *   - 按钮点击 → `/api/chat` with actionTag → 流式渲染结果
- *   - 发音按钮 → 复用 WordCard 数据路径
- *   - 深聊按钮 → 把 popup 已聊轮次迁移到 sidepanel
+ * 不在本文件做：
+ *   - 内联流式渲染（之前 phase B 加过又删，转移到 sidepanel）
+ *   - 历史搬迁（PRD §7.2 重路径）—— 现在所有对话都在 sidepanel，没有"popup 已有轮次"
  *
- * 触发方式：保留 pill（用户决策），点 pill 调 openPopup() 弹出。
+ * 拖拽 / 定位：复用 lib/use-draggable + useLayoutEffect 测真实高度
  */
-import { useEffect, useRef, useSyncExternalStore } from 'react';
-import { X, MessageSquare } from 'lucide-react';
-import type { SelectionContext } from '@/lib/messaging';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
+import { X, MessageSquare, Volume2 } from 'lucide-react';
+import type {
+  ActionTag,
+  AskWithSelectionPayload,
+  BackgroundMessage,
+  SelectionContext,
+} from '@/lib/messaging';
+import { actionsForSelectionType } from '@/lib/action-tags';
+import { useDraggable } from '@/lib/use-draggable';
 
 /** popup 锚定位置 —— pill 点击时计算，传进来定位 popup。
  *  使用 viewport 坐标系（即 getBoundingClientRect 原始值），不加 scrollX/Y，
  *  因为 popup 用 `position: fixed` 渲染。 */
 interface PopupAnchor {
-  /** 选区在 viewport 坐标系下的 bounding rect */
   rect: { top: number; left: number; right: number; bottom: number };
 }
 
-/** 给外部（pill 等组件）订阅 popup 状态用，便于在 popup 打开时隐藏自己 */
+/** 给外部（pill 等组件）订阅 popup 状态用 */
 export function useIsPopupOpen(): boolean {
   return useSyncExternalStore(
     subscribePopupState,
@@ -36,11 +50,8 @@ export function useIsPopupOpen(): boolean {
 }
 
 interface PopupState {
-  /** popup 是否打开 */
   open: boolean;
-  /** 当前选区 */
   ctx: SelectionContext | null;
-  /** 定位锚 */
   anchor: PopupAnchor | null;
 }
 
@@ -63,7 +74,7 @@ function getPopupState(): PopupState {
   return popupState;
 }
 
-/** pill 点击调用 —— 用户决策保留的"两步发现" trigger */
+/** pill 点击调用 */
 export function openPopup(ctx: SelectionContext, anchor: PopupAnchor): void {
   setPopupState({ open: true, ctx, anchor });
 }
@@ -72,60 +83,75 @@ export function closePopup(): void {
   setPopupState({ open: false, ctx: null, anchor: null });
 }
 
-// --- 按选区类型决定按钮集（PRD §8.1） ---------------------------------------
-//
-// 后端将来按 actionTag 切换 system prompt（PRD §9 chat 接口已规划）
-
-export type ActionTag =
-  | 'meaning'       // 词义
-  | 'pronunciation' // 音标 / 发音（走 WordCard 数据路径）
-  | 'sentence-translate' // 本句译法
-  | 'usage'         // 用法搭配
-  | 'translate'     // 翻句
-  | 'grammar'       // 析语法
-  | 'rewrite'       // 改写地道说法
-  | 'hard-parts';   // 难点定位
-
-interface ActionDef {
-  tag: ActionTag;
-  label: string;
-}
-
-function actionsForSelectionType(t: SelectionContext['selection']['type']): ActionDef[] {
-  if (t === 'word' || t === 'phrase') {
-    return [
-      { tag: 'meaning', label: '词义' },
-      { tag: 'pronunciation', label: '发音' },
-      { tag: 'sentence-translate', label: '本句译法' },
-      { tag: 'usage', label: '用法搭配' },
-    ];
-  }
-  // sentence / multi
-  return [
-    { tag: 'translate', label: '翻句' },
-    { tag: 'grammar', label: '析语法' },
-    { tag: 'rewrite', label: '改写地道说法' },
-    { tag: 'hard-parts', label: '难点定位' },
-  ];
+/** 推 ASK_WITH_SELECTION 给 background，附带 actionTag/initialMessage */
+function sendAsk(payload: AskWithSelectionPayload): void {
+  const msg: BackgroundMessage = { type: 'ASK_WITH_SELECTION', payload };
+  chrome.runtime
+    .sendMessage(msg)
+    .catch((err) => console.warn('[english-agent] ASK_WITH_SELECTION failed', err));
 }
 
 // --- 组件 ----------------------------------------------------------------
+
+const POPUP_WIDTH = 320;
+const POPUP_GAP = 8;
+const POPUP_MARGIN = 12;
 
 export function SelectionPopup() {
   const state = useSyncExternalStore(subscribePopupState, getPopupState, getPopupState);
   const popupRef = useRef<HTMLDivElement>(null);
 
-  // 点击外部 / Esc 关闭。关键：popup 在 Shadow DOM 里，document 收到 pointerdown
-  // 时 e.target 被 retarget 成 shadowHost；用 composedPath() 才能拿到 shadow 内
-  // 的真实目标节点。
+  /** 正在 SpeechSynthesis 播音的 tag（实质就只可能是 pronunciation） */
+  const [speakingTag, setSpeakingTag] = useState<ActionTag | null>(null);
+
+  // 拖拽：用 anchor 的预估位置初始化，挂载后 useLayoutEffect 用真实高度修正
+  const initialLeft = state.anchor?.rect.left ?? 0;
+  const initialTop = (state.anchor?.rect.bottom ?? 0) + POPUP_GAP;
+  const drag = useDraggable({
+    initial: { x: initialLeft, y: initialTop },
+    anchor: 'top-left',
+  });
+
+  // 每次 popup 打开 / anchor 变化：用真实 popup 高度重算定位
+  // 关键 fix：原来用 popupMaxHeight=360 判断翻不翻到上方，实际 popup 远不到那么高，
+  // 翻上方时算出来的 top 比正确位置高一大截 → "上飘"
+  useLayoutEffect(() => {
+    if (!state.open || !state.anchor || !popupRef.current) return;
+    const realHeight = popupRef.current.getBoundingClientRect().height;
+    const next = computePopupPosition(state.anchor, realHeight);
+    drag.setPos({ x: next.left, y: next.top });
+    // 故意只 dep anchor —— content 变了不重定位，popup 钉住不动
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.open, state.anchor?.rect.top, state.anchor?.rect.left, state.anchor?.rect.bottom]);
+
+  // 切换 ctx 时停掉发音（不同选区的快查不该混）
+  useEffect(() => {
+    if (speakingTag) {
+      window.speechSynthesis?.cancel();
+      setSpeakingTag(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.ctx?.id]);
+
+  // 关闭时收尾
+  useEffect(() => {
+    if (state.open) return;
+    if (speakingTag) {
+      window.speechSynthesis?.cancel();
+      setSpeakingTag(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.open]);
+
+  // 点击外部 / Esc 关闭。popup 在 Shadow DOM 里，document 的 pointerdown
+  // 看到的 e.target 是 shadowHost，用 composedPath 才能拿到内层真实目标。
   useEffect(() => {
     if (!state.open) return;
     function onPointerDown(e: PointerEvent) {
       const popup = popupRef.current;
       if (!popup) return;
-      // composedPath 会列出 shadow root 内层 → 外层，包含真实点击目标
       const path = e.composedPath();
-      if (path.includes(popup)) return; // 点在 popup 内部，忽略
+      if (path.includes(popup)) return;
       closePopup();
     }
     function onKey(e: KeyboardEvent) {
@@ -139,25 +165,45 @@ export function SelectionPopup() {
     };
   }, [state.open]);
 
+  const handleAction = useCallback(
+    (tag: ActionTag) => {
+      const ctx = state.ctx;
+      if (!ctx) return;
+      // 发音 = Tier 0 走浏览器 TTS，不开 sidepanel
+      if (tag === 'pronunciation') {
+        toggleSpeak(ctx.selection.text, speakingTag, setSpeakingTag);
+        return;
+      }
+      sendAsk({ ctx, actionTag: tag });
+      closePopup();
+    },
+    [state.ctx, speakingTag],
+  );
+
+  const handleDeepChat = useCallback(
+    (initialMessage?: string) => {
+      const ctx = state.ctx;
+      if (!ctx) return;
+      sendAsk({ ctx, initialMessage: initialMessage?.trim() || undefined });
+      closePopup();
+    },
+    [state.ctx],
+  );
+
   if (!state.open || !state.ctx || !state.anchor) return null;
 
   const actions = actionsForSelectionType(state.ctx.selection.type);
-  const { left, top } = positionPopup(state.anchor);
 
   return (
     <div
       ref={popupRef}
-      // 阻止 mousedown 把页面选区抹掉（点 popup 不应消除当前选区）
       onMouseDown={(e) => {
         e.stopPropagation();
       }}
       style={{
-        // 用 fixed + viewport 坐标：跟 WXT shadowHost 在 body 流里的位置脱钩，
-        // 也不需要 scrollX/Y 计算。代价是 popup 不跟着选区滚（acceptable）
         position: 'fixed',
-        top,
-        left,
-        width: 360,
+        ...drag.positionStyle(),
+        width: POPUP_WIDTH,
         maxWidth: 'calc(100vw - 40px)',
         background: '#fff',
         color: '#111',
@@ -170,17 +216,32 @@ export function SelectionPopup() {
         overflow: 'hidden',
       }}
     >
-      <Header ctx={state.ctx} onClose={closePopup} />
-      <Buttons actions={actions} />
-      <ResultArea />
-      <Footer />
+      <Header
+        ctx={state.ctx}
+        onClose={closePopup}
+        dragMouseDown={drag.onMouseDown}
+        consumeDragClick={drag.consumeDragClick}
+      />
+      <Buttons actions={actions} speakingTag={speakingTag} onPick={handleAction} />
+      <Footer onDeepChat={handleDeepChat} />
     </div>
   );
 }
 
-function Header({ ctx, onClose }: { ctx: SelectionContext; onClose: () => void }) {
+function Header({
+  ctx,
+  onClose,
+  dragMouseDown,
+  consumeDragClick,
+}: {
+  ctx: SelectionContext;
+  onClose: () => void;
+  dragMouseDown: (e: React.MouseEvent) => void;
+  consumeDragClick: () => boolean;
+}) {
   return (
     <div
+      onMouseDown={dragMouseDown}
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -188,6 +249,8 @@ function Header({ ctx, onClose }: { ctx: SelectionContext; onClose: () => void }
         padding: '8px 10px',
         borderBottom: '1px solid rgba(0,0,0,0.06)',
         background: 'rgba(0,0,0,0.02)',
+        cursor: 'move',
+        userSelect: 'none',
       }}
     >
       <span
@@ -217,7 +280,14 @@ function Header({ ctx, onClose }: { ctx: SelectionContext; onClose: () => void }
       </span>
       <button
         type="button"
-        onClick={onClose}
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={(e) => {
+          if (consumeDragClick()) {
+            e.preventDefault();
+            return;
+          }
+          onClose();
+        }}
         aria-label="Close"
         style={{
           width: 24,
@@ -238,7 +308,15 @@ function Header({ ctx, onClose }: { ctx: SelectionContext; onClose: () => void }
   );
 }
 
-function Buttons({ actions }: { actions: ActionDef[] }) {
+function Buttons({
+  actions,
+  speakingTag,
+  onPick,
+}: {
+  actions: { tag: ActionTag; label: string }[];
+  speakingTag: ActionTag | null;
+  onPick: (tag: ActionTag) => void;
+}) {
   return (
     <div
       style={{
@@ -246,52 +324,44 @@ function Buttons({ actions }: { actions: ActionDef[] }) {
         flexWrap: 'wrap',
         gap: 6,
         padding: 10,
-        borderBottom: '1px solid rgba(0,0,0,0.06)',
       }}
     >
-      {actions.map((a) => (
-        <button
-          key={a.tag}
-          type="button"
-          // Phase 2 接 LLM；现在只占位
-          onClick={() => console.log('[english-agent] action TODO:', a.tag)}
-          style={{
-            padding: '5px 10px',
-            background: 'rgba(0,0,0,0.04)',
-            border: '1px solid rgba(0,0,0,0.08)',
-            borderRadius: 14,
-            cursor: 'pointer',
-            fontSize: 12,
-            color: '#111',
-            fontFamily: 'inherit',
-          }}
-        >
-          {a.label}
-        </button>
-      ))}
+      {actions.map((a) => {
+        const active = a.tag === speakingTag;
+        const isSpeak = a.tag === 'pronunciation';
+        return (
+          <button
+            key={a.tag}
+            type="button"
+            onClick={() => onPick(a.tag)}
+            aria-label={a.label}
+            aria-pressed={active}
+            style={{
+              padding: '5px 10px',
+              background: active ? '#111' : 'rgba(0,0,0,0.04)',
+              color: active ? '#fff' : '#111',
+              border: '1px solid ' + (active ? '#111' : 'rgba(0,0,0,0.08)'),
+              borderRadius: 14,
+              cursor: 'pointer',
+              fontSize: 12,
+              fontFamily: 'inherit',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 4,
+              transition: 'background 0.1s, color 0.1s',
+            }}
+          >
+            {isSpeak && <Volume2 size={11} />}
+            {a.label}
+          </button>
+        );
+      })}
     </div>
   );
 }
 
-function ResultArea() {
-  // Phase 2 渲染流式答案；现在占位
-  return (
-    <div
-      style={{
-        padding: '12px 12px',
-        minHeight: 60,
-        maxHeight: 240,
-        overflowY: 'auto',
-        color: '#666',
-        fontSize: 12,
-      }}
-    >
-      点上方按钮快速查询，或在下方输入框深聊
-    </div>
-  );
-}
-
-function Footer() {
+function Footer({ onDeepChat }: { onDeepChat: (initialMessage?: string) => void }) {
+  const [text, setText] = useState('');
   return (
     <div
       style={{
@@ -305,8 +375,14 @@ function Footer() {
       <input
         type="text"
         placeholder="自由提问…"
-        // Phase 4 接 LLM + 深聊迁移；现在占位
-        disabled
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            onDeepChat(text);
+          }
+        }}
         style={{
           flex: 1,
           minWidth: 0,
@@ -317,13 +393,11 @@ function Footer() {
           borderRadius: 6,
           fontSize: 12,
           fontFamily: 'inherit',
-          opacity: 0.6,
         }}
       />
       <button
         type="button"
-        // Phase 4 接深聊
-        onClick={() => console.log('[english-agent] deep chat TODO')}
+        onClick={() => onDeepChat(text)}
         style={{
           padding: '5px 10px',
           background: '#111',
@@ -346,28 +420,61 @@ function Footer() {
 }
 
 /**
- * 简单定位（viewport 坐标）：选区下方 8px 偏移；popup 宽 360；
- * 超 viewport 右侧 → 贴右；下方装不下 → 翻到选区上方。
+ * 发音 Tier 0 —— window.speechSynthesis 直接发声。
+ * 已在播 → 再点 = 停止。Tier 1 真人音频留给 sidepanel WordCard 提供。
  */
-function positionPopup(anchor: PopupAnchor): { left: number; top: number } {
-  const popupWidth = 360;
-  const popupMaxHeight = 360;
-  const gap = 8;
-  const margin = 12;
+function toggleSpeak(
+  text: string,
+  speakingTag: ActionTag | null,
+  setSpeakingTag: (tag: ActionTag | null) => void,
+): void {
+  const synth = window.speechSynthesis;
+  if (!synth) {
+    console.warn('[english-agent] speechSynthesis unavailable');
+    return;
+  }
+  if (speakingTag === 'pronunciation') {
+    synth.cancel();
+    setSpeakingTag(null);
+    return;
+  }
+  synth.cancel();
+  const utter = new SpeechSynthesisUtterance(text);
+  const voices = synth.getVoices();
+  const enVoice =
+    voices.find((v) => v.lang === 'en-US') ??
+    voices.find((v) => v.lang === 'en-GB') ??
+    voices.find((v) => v.lang.startsWith('en'));
+  if (enVoice) utter.voice = enVoice;
+  utter.lang = enVoice?.lang ?? 'en-US';
+  utter.onend = () => setSpeakingTag(null);
+  utter.onerror = () => setSpeakingTag(null);
+  setSpeakingTag('pronunciation');
+  synth.speak(utter);
+}
+
+/**
+ * 计算 popup 在 viewport 坐标里的 left / top。
+ * 用真实 popup 高度判断"下方装不装得下"，避免按预估值误判翻到上方。
+ */
+function computePopupPosition(
+  anchor: PopupAnchor,
+  popupHeight: number,
+): { left: number; top: number } {
   const viewportW = window.innerWidth;
   const viewportH = window.innerHeight;
 
   let left = anchor.rect.left;
-  let top = anchor.rect.bottom + gap;
+  let top = anchor.rect.bottom + POPUP_GAP;
 
-  // 横向：贴右防越界
-  if (left + popupWidth > viewportW - margin) left = viewportW - popupWidth - margin;
-  if (left < margin) left = margin;
+  if (left + POPUP_WIDTH > viewportW - POPUP_MARGIN) {
+    left = viewportW - POPUP_WIDTH - POPUP_MARGIN;
+  }
+  if (left < POPUP_MARGIN) left = POPUP_MARGIN;
 
-  // 纵向：下方装不下 → 翻到选区上方
-  if (top + popupMaxHeight > viewportH - margin) {
-    top = anchor.rect.top - popupMaxHeight - gap;
-    if (top < margin) top = margin;
+  if (top + popupHeight > viewportH - POPUP_MARGIN) {
+    top = anchor.rect.top - popupHeight - POPUP_GAP;
+    if (top < POPUP_MARGIN) top = POPUP_MARGIN;
   }
 
   return { left, top };

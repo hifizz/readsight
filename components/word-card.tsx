@@ -82,7 +82,11 @@ export function WordCard({ surfaceForm, backendUrl, selectionContext }: WordCard
       });
 
     return () => ctrl.abort();
-  }, [surfaceForm, backendUrl, selectionContext]);
+    // 关键：用 `selectionContext?.id`（字符串）当 dep，不要用整个 selectionContext 对象。
+    // sidepanel 每次 SELECTION_READY 反序列化都是新对象 ref —— 若用对象 ref 当 dep，
+    // 同一个选区每次 re-render 都会重发 /api/lookup，把后端打成死循环。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [surfaceForm, backendUrl, selectionContext?.id]);
 
   if (state.kind === 'loading') {
     return (

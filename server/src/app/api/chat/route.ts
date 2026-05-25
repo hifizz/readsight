@@ -5,11 +5,14 @@
  *   1. Vercel AI SDK v6 `streamText` + `toUIMessageStreamResponse()`，与扩展端的
  *      assistant-ui `useChatRuntime` + `DefaultChatTransport` 端到端对齐。
  *   2. 请求体里可选的 `selectionContext` 写进 system prompt（PRD §6.1 结合语境）。
- *   3. M2 落库：
+ *   3. PRD §7.2 轻路径：popup 按钮带 `actionTag` 来 + `format='text'` 拿纯文本流。
+ *      重路径（sidepanel）默认 `format='ui'`，跟 assistant-ui 一一对齐。
+ *   4. M2 落库：
  *      - 进入路由时 upsertSelectionContext（如有）—— 后端是唯一真相源
  *      - streamText.onFinish 把 user + assistant 两条 chat_messages 写库
  *        （threadId = selectionContext.id，M4 重放语境需要这条线）
- *      - 当 selection.type === 'word' 时调 lookupWord 拿 itemKey + recordEncounter(deepchat)
+ *      - 当 selection.type === 'word' 时调 lookupWord 拿 itemKey + recordEncounter；
+ *        带 actionTag 走 'quick'，无 actionTag 走 'deepchat'
  *      - 所有落库 fire-and-forget，不阻塞 stream
  */
 import crypto from 'node:crypto';
@@ -20,16 +23,27 @@ import { chatMessages } from '@/db/schema';
 import { upsertSelectionContext, type SelectionContextDTO } from '@/lib/selection-context';
 import { recordEncounter } from '@/lib/encounter';
 import { lookupWord } from '@/lib/lookup';
+import { ACTION_TAG_PROMPTS, type ActionTag } from '@/lib/action-tags';
 
 export const maxDuration = 30;
 export const dynamic = 'force-dynamic';
 
 type ChatRequestBody = {
-  messages: UIMessage[];
+  messages?: UIMessage[];
   selectionContext?: SelectionContextDTO;
+  /** popup 快捷按钮 / sidepanel SuggestionBar 带的 tag —— 切系统提示；缺省 = 自由聊 */
+  actionTag?: ActionTag;
 };
 
-function buildSystemPrompt(ctx?: SelectionContextDTO): string {
+function buildSystemPrompt(ctx: SelectionContextDTO | undefined, actionTag?: ActionTag): string {
+  const base = buildBaseSystemPrompt(ctx);
+  if (!actionTag) return base;
+  const taskPrompt = ACTION_TAG_PROMPTS[actionTag];
+  // 把 task 拼到 base 之后；base 给"角色 + 语境"，task 给"这次要做什么"
+  return taskPrompt ? `${base}\n\n${taskPrompt}` : base;
+}
+
+function buildBaseSystemPrompt(ctx?: SelectionContextDTO): string {
   if (!ctx) {
     return '你是一位耐心的英语学习助手。回答简洁、贴合用户的英文阅读语境，必要时给地道译法和用法示例。';
   }
@@ -72,6 +86,7 @@ function extractUserText(m: UIMessage | undefined): string {
 export async function POST(req: Request) {
   const body = (await req.json()) as ChatRequestBody;
   const ctx = body.selectionContext;
+  const actionTag = body.actionTag;
 
   // 1) 同步 upsert SelectionContext —— 后续 onFinish 写 chat_messages 时
   //    threadId(=ctx.id) 外键依赖它存在
@@ -79,17 +94,19 @@ export async function POST(req: Request) {
     await upsertSelectionContext(ctx);
   }
 
+  const messages = body.messages ?? [];
+
   const result = streamText({
     model: minimax(DEFAULT_MODEL_ID),
-    system: buildSystemPrompt(ctx),
-    messages: await convertToModelMessages(body.messages ?? []),
+    system: buildSystemPrompt(ctx, actionTag),
+    messages: await convertToModelMessages(messages),
     /**
      * onFinish 拿到完整 assistant 文本后落库。fire-and-forget：内部不 await
      * 任何 DB 调用，靠 setImmediate 把它们扔到下一个 tick，避免阻塞 stream close。
      */
     onFinish: ({ text }) => {
       if (!ctx) return; // 没语境 = 不学习的闲聊，不留痕
-      const latestUser = body.messages?.at(-1);
+      const latestUser = messages.at(-1);
       const userText = extractUserText(latestUser);
       const threadId = ctx.id;
 
@@ -115,8 +132,9 @@ export async function POST(req: Request) {
           console.warn('[chat] chat_messages insert failed', err);
         }
 
-        // 单词类选区：去查词典拿 itemKey + 记 deepchat 事件
-        // phrase/sentence/multi 没原子 itemKey，按 todo 决策 #2 跳过事件落库
+        // 单词类选区：去查词典拿 itemKey + 记 encounter；
+        // 带 actionTag = popup 快捷动作走 'quick'，无 = sidepanel 深聊走 'deepchat'。
+        // phrase/sentence/multi 没原子 itemKey，按 todo.m2 决策 #2 跳过事件落库。
         if (ctx.selection.type === 'word') {
           try {
             const lookup = await lookupWord(ctx.selection.text);
@@ -124,10 +142,10 @@ export async function POST(req: Request) {
               surfaceForm: ctx.selection.text,
               itemKey: lookup.itemKey,
               contextRef: ctx.id,
-              eventType: 'deepchat',
+              eventType: actionTag ? 'quick' : 'deepchat',
             });
           } catch (err) {
-            console.warn('[chat] deepchat encounter logging failed', err);
+            console.warn('[chat] encounter logging failed', err);
           }
         }
       });

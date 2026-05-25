@@ -21,7 +21,16 @@ import {
 import { useChatRuntime } from '@assistant-ui/react-ai-sdk';
 import { DefaultChatTransport } from 'ai';
 import { History, X, MessageSquare, BookOpen } from 'lucide-react';
-import type { BackgroundMessage, SelectionContext } from '@/lib/messaging';
+import type {
+  ActionTag,
+  AskWithSelectionPayload,
+  BackgroundMessage,
+  SelectionContext,
+} from '@/lib/messaging';
+import {
+  actionsForSelectionType,
+  userMessageForActionTag,
+} from '@/lib/action-tags';
 import { Thread } from '@/components/assistant-ui/thread';
 import { ThreadList } from '@/components/assistant-ui/thread-list';
 import { WordCard } from '@/components/word-card';
@@ -46,14 +55,25 @@ export default function App() {
   const selectionRef = useRef<SelectionContext | null>(null);
   selectionRef.current = selection;
 
+  /**
+   * popup 快捷按钮 / sidepanel SuggestionBar 设的"本次请求带 actionTag"。
+   * transport.body() 用完即清；下一次普通输入回到无 tag 自由聊。
+   */
+  const pendingActionTagRef = useRef<ActionTag | null>(null);
+
   const runtime = useChatRuntime({
     transport: useMemo(
       () =>
         new DefaultChatTransport({
           api: `${BACKEND}/api/chat`,
-          body: () => ({
-            selectionContext: selectionRef.current ?? undefined,
-          }),
+          body: () => {
+            const actionTag = pendingActionTagRef.current ?? undefined;
+            pendingActionTagRef.current = null;
+            return {
+              selectionContext: selectionRef.current ?? undefined,
+              actionTag,
+            };
+          },
         }),
       [],
     ),
@@ -88,9 +108,37 @@ export default function App() {
     [],
   );
 
+  /**
+   * 代用户发：跟用户在输入框打字 + 按 Send 完全等价 —— `composer.setText` +
+   * `composer.send()`。
+   *
+   * 为什么不用 `runtime.thread.append`：append 会触发 thread 切换/创建的隐式
+   * 路径，跟 `switchToNewThread` 撞在一起时，消息发到的 thread 跟 UI 渲染的
+   * thread 不是同一个，结果就是"后端有请求 / 前端 thread 空着"。直接驱动当前
+   * 可见的 composer，永远跟用户眼前的 thread 一致。
+   */
+  const sendActionTag = useCallback(
+    (tag: ActionTag) => {
+      pendingActionTagRef.current = tag;
+      runtime.thread.composer.setText(userMessageForActionTag(tag));
+      runtime.thread.composer.send();
+    },
+    [runtime],
+  );
+
+  // 关键：稳定回调 ref，避免 SelectionBridge 内 useCallback(dispatch) 因为
+  // onArrival 是新 arrow 而每 render 重建 —— 那会让 dispatch 依赖的 useEffect
+  // 反复 cleanup+rerun，进而反复 setSelection / 反复发 /api/lookup（死循环源）。
+  const onArrival = useCallback(() => setActiveTab('chat'), []);
+
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <SelectionBridge onNewSelection={setSelection} onArrival={() => setActiveTab('chat')} />
+      <SelectionBridge
+        onNewSelection={setSelection}
+        onArrival={onArrival}
+        selectionRef={selectionRef}
+        pendingActionTagRef={pendingActionTagRef}
+      />
       <TooltipProvider>
         <div className="flex h-screen flex-col bg-background text-foreground">
           <header className="flex items-center justify-between border-b px-3 py-2">
@@ -147,7 +195,13 @@ export default function App() {
               </TabsTrigger>
             </TabsList>
             <TabsContent value="chat" className="flex-1 overflow-hidden mt-0">
-              <Thread />
+              <Thread
+                composerPrefix={
+                  selection ? (
+                    <SuggestionBar selection={selection} onPick={sendActionTag} />
+                  ) : null
+                }
+              />
             </TabsContent>
             <TabsContent value="records" className="flex-1 overflow-y-auto mt-0">
               <RecordsList
@@ -166,42 +220,147 @@ export default function App() {
 function SelectionBridge({
   onNewSelection,
   onArrival,
+  selectionRef,
+  pendingActionTagRef,
 }: {
   onNewSelection: (ctx: SelectionContext) => void;
   /** 新选区到来时也切回 chat tab，避免用户在 records 视图里错过新对话 */
   onArrival: () => void;
+  /** 透传父级 ref：手动同步 selectionRef.current，确保 thread.append 的 body() 拿到新 ctx */
+  selectionRef: React.MutableRefObject<SelectionContext | null>;
+  /** 透传父级 ref：自动发送时把 actionTag 塞进去给 transport.body() 用 */
+  pendingActionTagRef: React.MutableRefObject<ActionTag | null>;
 }) {
   const runtime = useAssistantRuntime();
+  /** 已经"代用户发过"的 ctx.id，避免 storage-path 和 onMessage-path 双触发自动发送 */
+  const autoSentIdsRef = useRef(new Set<string>());
+  /**
+   * 已经"开过新 thread"的 ctx.id —— 跟 autoSentIdsRef 分开，因为深聊+空输入框
+   * 这条路 wantsAutoSend=false 但仍然要给该选区开新 thread。
+   */
+  const processedCtxIdsRef = useRef(new Set<string>());
 
+  /**
+   * SELECTION_READY 事件处理：每个新选区开新 thread，按需代用户发一条消息。
+   *
+   * 关键：先 await switchToNewThread()，再调 composer.setText + composer.send。
+   * 为什么不是 runtime.thread.append —— append 抓的是 stale binding，
+   * useChat({id}) 还没 re-key 时落到旧 thread，UI 显示新 thread 空着。
+   * composer.send 在调用时刻读 core state，所以 await 完 switch 之后就指向新 thread。
+   */
+  const dispatch = useCallback(
+    async (payload: AskWithSelectionPayload) => {
+      const { ctx, actionTag, initialMessage } = payload;
+      const isNewCtx = !processedCtxIdsRef.current.has(ctx.id);
+      const wantsAutoSend = !!(actionTag || initialMessage);
+      const alreadySent = wantsAutoSend && autoSentIdsRef.current.has(ctx.id);
+
+      // 选区状态先刷新；同一个 ctx.id 二次进入（race）也走这一步保证 UI 状态新
+      onArrival();
+      // 手动同步 ref：紧随其后的 transport.body() 立刻就能在 selectionRef.current
+      // 拿到新 ctx（React state 异步，本帧 selectionRef.current = selection 还没生效）
+      selectionRef.current = ctx;
+      onNewSelection(ctx);
+
+      // 新 ctx → 开新 thread；二次进入直接复用当前 thread
+      if (isNewCtx) {
+        processedCtxIdsRef.current.add(ctx.id);
+        try {
+          await runtime.threads.switchToNewThread();
+        } catch (err) {
+          console.warn('[english-agent] switchToNewThread failed', err);
+        }
+      }
+
+      if (!wantsAutoSend || alreadySent) return;
+      autoSentIdsRef.current.add(ctx.id);
+
+      if (actionTag) {
+        pendingActionTagRef.current = actionTag;
+        runtime.thread.composer.setText(userMessageForActionTag(actionTag));
+      } else if (initialMessage) {
+        runtime.thread.composer.setText(initialMessage);
+      }
+      runtime.thread.composer.send();
+    },
+    [runtime, onArrival, onNewSelection, selectionRef, pendingActionTagRef],
+  );
+
+  // 启动兜底：sidepanel 第一次挂载晚于 ASK 时 SELECTION_READY 已经没接住，
+  // 从 session storage 里读一份。dispatch 内的 autoSentIdsRef 保证同一个
+  // ctx.id 即使 onMessage 那条路也来了也不会重复 send。
   useEffect(() => {
     let cancelled = false;
     chrome.storage.session.get(STORAGE_KEY_LATEST).then(async (res) => {
       const id = res[STORAGE_KEY_LATEST] as string | undefined;
       if (!id || cancelled) return;
       const r2 = await chrome.storage.session.get(STORAGE_KEY_PREFIX + id);
-      const ctx = r2[STORAGE_KEY_PREFIX + id] as SelectionContext | undefined;
-      if (ctx && !cancelled) onNewSelection(ctx);
+      const stored = r2[STORAGE_KEY_PREFIX + id] as
+        | AskWithSelectionPayload
+        | SelectionContext
+        | undefined;
+      if (!stored || cancelled) return;
+      // 兼容旧 storage（直接存 SelectionContext）vs 新 storage（存 payload）
+      const payload: AskWithSelectionPayload =
+        'ctx' in stored ? stored : { ctx: stored };
+      // 清掉 storage 里的 actionTag/initialMessage —— 否则刷新 sidepanel 又会自动发
+      if (payload.actionTag || payload.initialMessage) {
+        chrome.storage.session
+          .set({ [STORAGE_KEY_PREFIX + id]: { ctx: payload.ctx } })
+          .catch(() => {});
+      }
+      await dispatch(payload);
     });
     return () => {
       cancelled = true;
     };
-  }, [onNewSelection]);
+  }, [dispatch]);
 
   useEffect(() => {
     function onMessage(message: BackgroundMessage) {
       if (message.type === 'SELECTION_READY') {
-        runtime.threads
-          .switchToNewThread()
-          .catch((err) => console.warn('[english-agent] switchToNewThread failed', err));
-        onArrival();
-        onNewSelection(message.payload);
+        dispatch(message.payload).catch((err) =>
+          console.warn('[english-agent] dispatch failed', err),
+        );
       }
     }
     chrome.runtime.onMessage.addListener(onMessage);
     return () => chrome.runtime.onMessage.removeListener(onMessage);
-  }, [runtime, onNewSelection, onArrival]);
+  }, [dispatch]);
 
   return null;
+}
+
+/**
+ * 输入框上方的快捷按钮条 —— 镜像 popup 4 按钮，按 selection.type 切。
+ * 点一下 = 代用户发"词义/翻句/..."；server 端 actionTag 切系统提示。
+ */
+function SuggestionBar({
+  selection,
+  onPick,
+}: {
+  selection: SelectionContext;
+  onPick: (tag: ActionTag) => void;
+}) {
+  // 跳过 pronunciation —— sidepanel 已经有 ContextCard / WordCard 的喇叭按钮
+  // 提供 Tier 0/1 发音，重复了反而干扰
+  const actions = actionsForSelectionType(selection.selection.type).filter(
+    (a) => a.tag !== 'pronunciation',
+  );
+  return (
+    <div className="mx-auto flex w-full max-w-(--thread-max-width) flex-wrap gap-1.5 px-1">
+      {actions.map((a) => (
+        <button
+          key={a.tag}
+          type="button"
+          onClick={() => onPick(a.tag)}
+          className="rounded-full border bg-muted/40 px-3 py-1 text-xs text-foreground/80 hover:bg-muted hover:text-foreground transition-colors"
+        >
+          {a.label}
+        </button>
+      ))}
+    </div>
+  );
 }
 
 function ContextCard({
