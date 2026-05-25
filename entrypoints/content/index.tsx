@@ -40,7 +40,7 @@ export default defineContentScript({
   async main(ctx) {
     const ui = await createShadowRootUi(ctx, {
       name: 'english-agent-pill',
-      // overlay 模式 + 巨大 z-index：保证 pill 浮在 TechCrunch 自己的导航/弹窗之上。
+      // overlay 模式 + 巨大 z-index：保证 pill 浮在宿主页面的导航 / sticky / 弹窗之上。
       position: 'overlay',
       alignment: 'top-left',
       zIndex: 2147483647,
@@ -358,7 +358,7 @@ function SelectionPill() {
 }
 
 // 文章正文里"句子级"块的标签。PRD §8.2 命门一的"块"= 这里 closest() 命中的最近祖先。
-// 这是默认适配器；TechCrunch 适配器以后可以扩这个列表（PRD §3.2）。
+// 通用适配器，不挂任何站点白名单；如果某些站结构特别奇怪需要定制，再走 PRD §3.2 的站点适配器机制扩这个列表。
 const BLOCK_SELECTOR = 'p, li, blockquote, h1, h2, h3, h4, h5, h6, dd';
 
 function findContentBlock(node: Node | null): HTMLElement | null {
@@ -467,7 +467,8 @@ function buildSelectionContext(
   if (start === end) return null;
 
   const sentence = findCoveringSentence(paragraph, start, end);
-  // 文章标题 / 大标题：TechCrunch 用 [data-testid="article-headline"]，默认走 h1。
+  // 文章标题 / 大标题：先抓 h1（通用），少数站把标题挂在 [data-testid="article-headline"]
+  // 之类属性上做兼容（TC 是一个例子，不是特例）。
   const heading = (
     document.querySelector('h1, [data-testid="article-headline"]') as HTMLElement | null
   )?.innerText?.trim();
@@ -494,9 +495,8 @@ function buildSelectionContext(
   };
 }
 
-// 简易站点识别 —— 后续 PRD §3.2 站点适配器接入这里。
+// 站点标识 —— 直接用 hostname 去掉 www. 前缀。
+// 不再硬编码任何站点白名单；PRD §3.2 站点适配器接入时按 hostname 路由即可。
 function detectSiteId(): string {
-  const host = location.hostname;
-  if (/(^|\.)techcrunch\.com$/.test(host)) return 'techcrunch';
-  return 'default';
+  return location.hostname.replace(/^www\./, '');
 }

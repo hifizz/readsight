@@ -17,9 +17,17 @@ export default defineConfig({
   vite: () => ({
     plugins: [tailwindcss()],
   }),
+  // `pnpm dev` 启动 Chrome 时自动开这个页 —— 跳过 chrome://newtab 一步，
+  // 直接落到我们的目标测试场（TC 长文 + 无限滚动）。
+  // 想换页：直接改 URL 或塞多个进数组都行。
+  webExt: {
+    startUrls: [
+      'https://techcrunch.com/2026/05/24/i-tried-amazons-bee-wearable-and-am-both-intrigued-and-slightly-creeped-out/',
+    ],
+  },
   manifest: {
     name: 'English Agent',
-    description: 'TechCrunch 沉浸式精读 (划词精读 + 双语翻译)',
+    description: '沉浸式英语精读 (任意英文页 · 划词精读 + 双语翻译)',
     permissions: ['sidePanel', 'storage', 'activeTab', 'contextMenus'],
     action: {
       default_title: 'English Agent',
