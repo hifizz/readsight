@@ -24,27 +24,43 @@ const BACKEND = import.meta.env.WXT_BACKEND_URL ?? 'http://localhost:4010';
 const STORAGE_KEY_LATEST = 'english-agent:latest-selection-id';
 const STORAGE_KEY_PREFIX = 'english-agent:selection:';
 
-const CONTEXT_MENU_ID = 'english-agent-toggle-translate';
+/** 右键菜单 id —— 三项：选区翻译 / 整页翻译 / 重置本站规则（通用恢复入口） */
+const MENU_ID_TRANSLATE_SELECTION = 'english-agent-translate-selection';
+const MENU_ID_TRANSLATE_PAGE = 'english-agent-translate-page';
+const MENU_ID_RESET_RULE = 'english-agent-reset-rule';
+
+/** 给 active tab 发消息的通用工具 —— 拿不到 tabId 时自动查 active tab */
+function sendToActiveTab(message: BackgroundMessage, tabId?: number): void {
+  if (tabId != null) {
+    chrome.tabs.sendMessage(tabId, message).catch(() => {
+      // content script 未注入（chrome:// 等内部页）—— 静默
+    });
+    return;
+  }
+  chrome.tabs
+    .query({ active: true, currentWindow: true })
+    .then((tabs) => {
+      const id = tabs[0]?.id;
+      if (id != null) {
+        chrome.tabs.sendMessage(id, message).catch(() => {});
+      }
+    })
+    .catch((err) => console.warn('[english-agent] tabs.query failed', err));
+}
 
 /** 触发当前 tab 的 content script 切换全文翻译（右键 / 快捷键共用） */
 function toggleTranslateInActiveTab(tabId?: number): void {
-  if (tabId == null) {
-    chrome.tabs
-      .query({ active: true, currentWindow: true })
-      .then((tabs) => {
-        const id = tabs[0]?.id;
-        if (id != null) {
-          chrome.tabs.sendMessage(id, { type: 'TOGGLE_TRANSLATE' }).catch(() => {
-            // content script 未注入（chrome:// 等内部页）—— 静默
-          });
-        }
-      })
-      .catch((err) => console.warn('[english-agent] tabs.query failed', err));
-    return;
-  }
-  chrome.tabs.sendMessage(tabId, { type: 'TOGGLE_TRANSLATE' }).catch(() => {
-    // 同上
-  });
+  sendToActiveTab({ type: 'TOGGLE_TRANSLATE' }, tabId);
+}
+
+/** 触发当前 tab 的 content script 打开划词 Dialog */
+function translateSelectionInActiveTab(tabId?: number): void {
+  sendToActiveTab({ type: 'TRANSLATE_SELECTION' }, tabId);
+}
+
+/** 触发当前 tab 的 content script 清除本域名规则（恢复 FAB 可见 / 取消 always） */
+function resetDomainRuleInActiveTab(tabId?: number): void {
+  sendToActiveTab({ type: 'RESET_DOMAIN_RULE' }, tabId);
 }
 
 export default defineBackground(() => {
@@ -54,13 +70,27 @@ export default defineBackground(() => {
     .setPanelBehavior({ openPanelOnActionClick: true })
     .catch((err: unknown) => console.error('[english-agent] setPanelBehavior failed', err));
 
-  // 右键菜单：单一条目，按 active tab 的翻译状态切换标题"翻译" ⇄ "撤销翻译"
+  // 右键菜单：两项独立
+  //   1. "翻译选中内容"：只在 selection 上下文显示，点 → 打开划词 Dialog
+  //   2. "翻译整页 / 撤销整页翻译"：page+selection 都显示，标题随翻译状态切换
   // 在 onInstalled 里 create，避免 SW 重启 / 扩展更新时重复 create 抛"duplicate id"
   chrome.runtime.onInstalled.addListener(() => {
     try {
       chrome.contextMenus.create({
-        id: CONTEXT_MENU_ID,
-        title: '翻译 (English Agent)',
+        id: MENU_ID_TRANSLATE_SELECTION,
+        title: '翻译选中内容 (English Agent)',
+        contexts: ['selection'],
+      });
+      chrome.contextMenus.create({
+        id: MENU_ID_TRANSLATE_PAGE,
+        title: '翻译整页 (English Agent)',
+        contexts: ['page', 'selection'],
+      });
+      // 第三项 —— 通用恢复入口：清掉本站规则。FAB 被 never 隐藏时是用户唯一
+      // 的回路；same item 也能让用户在 always 站上"今天就别自动翻了"。
+      chrome.contextMenus.create({
+        id: MENU_ID_RESET_RULE,
+        title: '重置本站翻译规则 (English Agent)',
         contexts: ['page', 'selection'],
       });
     } catch (err) {
@@ -68,8 +98,12 @@ export default defineBackground(() => {
     }
   });
   chrome.contextMenus.onClicked.addListener((info, tab) => {
-    if (info.menuItemId === CONTEXT_MENU_ID) {
+    if (info.menuItemId === MENU_ID_TRANSLATE_SELECTION) {
+      translateSelectionInActiveTab(tab?.id);
+    } else if (info.menuItemId === MENU_ID_TRANSLATE_PAGE) {
       toggleTranslateInActiveTab(tab?.id);
+    } else if (info.menuItemId === MENU_ID_RESET_RULE) {
+      resetDomainRuleInActiveTab(tab?.id);
     }
   });
 
@@ -125,11 +159,13 @@ export default defineBackground(() => {
       return true;
     }
     if (message.type === 'TRANSLATE_STATE_CHANGED') {
-      // content script 通知翻译开 / 关 → 更新右键菜单标题
+      // content script 通知翻译开 / 关 → 更新"翻译整页"项的标题
       // 注意：chrome.contextMenus 是全局的，多 tab 时按最近活动 tab 状态展示
-      const title = message.payload.active ? '撤销翻译 (English Agent)' : '翻译 (English Agent)';
+      const title = message.payload.active
+        ? '撤销整页翻译 (English Agent)'
+        : '翻译整页 (English Agent)';
       chrome.contextMenus
-        .update(CONTEXT_MENU_ID, { title })
+        .update(MENU_ID_TRANSLATE_PAGE, { title })
         .catch?.(() => {
           /* 菜单还没 create / 已 remove，忽略 */
         });

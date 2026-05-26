@@ -18,6 +18,21 @@ import { Languages, X, ChevronDown } from 'lucide-react';
 import { Readability, isProbablyReaderable } from '@mozilla/readability';
 import type { BackgroundMessage, TranslationResult } from '@/lib/messaging';
 import { useDraggable } from '@/lib/use-draggable';
+import {
+  type DomainRule,
+  clearDomainRule,
+  getDomainRule,
+  normalizeHostname,
+  setDomainRule,
+  subscribeDomainRule,
+} from '@/lib/domain-rules';
+import {
+  type DetectionResult,
+  detectPageLanguage,
+  getUserPrimaryLang,
+  isSamePrimary,
+  languageLabelZh,
+} from '@/lib/page-language';
 
 const BLOCK_SELECTOR = 'p, li, blockquote, h1, h2, h3, h4, h5, h6, dd';
 /** 文章正文容器选择器 —— h1 / 内嵌 header 在这种容器内才豁免外部过滤 */
@@ -727,6 +742,16 @@ interface ModuleState {
 let moduleState: ModuleState = { status: 'idle', done: 0, total: 0 };
 const stateListeners = new Set<() => void>();
 
+/**
+ * 用户本会话最后一次"手动选的翻译模式"。
+ *   - 用户点 FAB（主按钮）→ 'article'
+ *   - ModeMenu 里选"翻译正文/翻译全页" → 对应 mode
+ *   - 仅在 idle→active 切换时记录；undo 不清空（让"换完再翻"的体验顺）
+ * 用途：用户接着点"总是自动翻译"时，规则的 mode 字段沿用这个，
+ *      实现"你现在怎么看，以后就怎么看"。
+ */
+let lastUsedMode: TranslateMode | null = null;
+
 function setModuleState(next: ModuleState): void {
   moduleState = next;
   for (const cb of stateListeners) cb();
@@ -768,6 +793,7 @@ export function togglePageTranslation(mode: TranslateMode = 'article'): void {
     console.warn('[english-agent] no translatable blocks found');
     return;
   }
+  lastUsedMode = mode;
   setModuleState({ status: 'active', done: 0, total: blocks.length });
   notifyExternalListeners('active');
   orchestrator.start(blocks, {
@@ -842,16 +868,281 @@ function notifyExternalListeners(status: FabStatus): void {
   for (const cb of externalListeners) cb(status);
 }
 
+// --- SPA URL 监听：always 模式下跨 SPA 路由续翻 ---------------------------
+//
+// 现有 MutationObserver 只解决"同一文章内 lazy-load"。SPA 站点（TC、Reddit、
+// 大多数现代媒体）的"换一篇文章"是 history.pushState + DOM 整树替换，URL 变了
+// 但 content script 不会重启。此时旧译文还挂在已被 unmount 的节点上看着诡异
+// 也没用，新内容也不会被翻译。
+//
+// 这里 patch 一次 history API，URL 变化 → 撤销 + 延迟 600ms 重翻。延迟用来等
+// React commit + 异步数据加载稳定，否则 extractArticleBlocks 抓到的是骨架屏。
+//
+// currentDomainRule 由 FAB 通过 useEffect 同步进来。
+let currentDomainRule: DomainRule | null = null;
+let lastUrl: string = typeof location !== 'undefined' ? location.href : '';
+let historyHooksInstalled = false;
+const URL_CHANGE_RETRANSLATE_DELAY_MS = 600;
+
+function syncCurrentDomainRule(rule: DomainRule | null): void {
+  currentDomainRule = rule;
+}
+
+// --- 页面语言检测（模块级缓存 + 订阅）------------------------------------
+//
+// 谁会跑检测：
+//   - 初次 auto-start（FAB useEffect）
+//   - SPA URL change 后（重翻前）
+// 谁会读：
+//   - 上述两处用 shouldSkipForSameLanguage 做决策
+//   - ModeMenu hint（通过 useSyncExternalStore 订阅）
+let currentPageLangDetection: DetectionResult | null = null;
+const pageLangListeners = new Set<() => void>();
+
+function setPageLangDetection(d: DetectionResult | null): void {
+  currentPageLangDetection = d;
+  for (const cb of pageLangListeners) cb();
+}
+function subscribePageLangDetection(cb: () => void): () => void {
+  pageLangListeners.add(cb);
+  return () => {
+    pageLangListeners.delete(cb);
+  };
+}
+function getCurrentPageLangDetection(): DetectionResult | null {
+  return currentPageLangDetection;
+}
+
+async function refreshPageLangDetection(): Promise<DetectionResult> {
+  const result = await detectPageLanguage();
+  setPageLangDetection(result);
+  return result;
+}
+
+// --- 首次外语页询问 banner 状态 ------------------------------------------
+//
+// "一次性"的语义：每个 content script 生命周期内最多弹一次。SPA 跳转不重置；
+// 只有 full page reload 才会让 banner 有机会再出。
+//
+// 谁会写 promptDismissed：
+//   - 用户在 banner 上点了任一动作（含 X）
+//   - 用户从其它路径触发了翻译（FAB 手动点 / always 规则触发）
+let promptDismissed = false;
+const promptListeners = new Set<() => void>();
+
+function setPromptDismissed(v: boolean): void {
+  if (promptDismissed === v) return;
+  promptDismissed = v;
+  for (const cb of promptListeners) cb();
+}
+function subscribePromptDismissed(cb: () => void): () => void {
+  promptListeners.add(cb);
+  return () => {
+    promptListeners.delete(cb);
+  };
+}
+function getPromptDismissed(): boolean {
+  return promptDismissed;
+}
+
+// --- "从不"动作的撤销窗口 ------------------------------------------------
+//
+// 用户在 banner 或 ModeMenu 上点"从不"后，FAB 会消失 —— 用户突然失去所有
+// 入口，体验是"我点错了怎么办"。这里在 5s 内显示一条"已禁用 · 撤销 · 右键菜单可恢复"
+// 提示，给一个一键回滚 + 一个长期恢复路径提示。
+//
+// 模块级状态：任何 UI 入口（banner / ModeMenu）写"从不"都走同一个 trigger，
+// confirm banner 单例显示。
+let neverConfirmState: { until: number } | null = null;
+let neverConfirmTimer: ReturnType<typeof setTimeout> | null = null;
+const neverConfirmListeners = new Set<() => void>();
+const NEVER_CONFIRM_TTL_MS = 5000;
+
+function setNeverConfirmState(v: { until: number } | null): void {
+  neverConfirmState = v;
+  for (const cb of neverConfirmListeners) cb();
+}
+function subscribeNeverConfirm(cb: () => void): () => void {
+  neverConfirmListeners.add(cb);
+  return () => {
+    neverConfirmListeners.delete(cb);
+  };
+}
+function getNeverConfirmState(): { until: number } | null {
+  return neverConfirmState;
+}
+
+/** 写入 never 规则 + 启动 5s 撤销窗口（任何 UI 入口共用） */
+function triggerNeverWithConfirmation(hostname: string, mode: TranslateMode): void {
+  void setDomainRule(hostname, { auto: 'never', mode });
+  setNeverConfirmState({ until: Date.now() + NEVER_CONFIRM_TTL_MS });
+  if (neverConfirmTimer) clearTimeout(neverConfirmTimer);
+  neverConfirmTimer = setTimeout(() => {
+    neverConfirmTimer = null;
+    setNeverConfirmState(null);
+    // banner（如果当时还是 choosing 模式）也一并 dismiss，避免 confirm 消失后
+    // 重新展示 choosing —— 用户的选择已经做出，不该再回到决策态
+    setPromptDismissed(true);
+  }, NEVER_CONFIRM_TTL_MS);
+}
+
+function undoNever(hostname: string): void {
+  void clearDomainRule(hostname);
+  if (neverConfirmTimer) {
+    clearTimeout(neverConfirmTimer);
+    neverConfirmTimer = null;
+  }
+  setNeverConfirmState(null);
+  // 不重置 promptDismissed —— 让 banner 是否再显示完全由 shouldShowPrompt 重新判定
+}
+
+/**
+ * "同语言、应该跳过自动翻译" —— 任一来源给出与浏览器主子标签一致的 lang 就跳过。
+ *
+ * CLD3 是首选信号（reliable 与否都信，CLD3 的低置信也比 html-lang 强）。
+ * html-lang 仅在 CLD3 缺失时作为兜底；它的可信度对"匹配用户"方向其实够用：
+ *   - html-lang=zh + 用户=zh → 几乎必是中文页（站点没必要假装是中文）
+ *   - 反例 html-lang=en + 实际 zh 内容 → CLD3 会先抓到，html-lang 不会被读到
+ */
+function shouldSkipForSameLanguage(d: DetectionResult | null): boolean {
+  if (!d || !d.lang) return false;
+  return isSamePrimary(d.lang, getUserPrimaryLang());
+}
+
+function handleSpaUrlChange(): void {
+  if (typeof location === 'undefined') return;
+  if (lastUrl === location.href) return;
+  const from = lastUrl;
+  lastUrl = location.href;
+  if (currentDomainRule?.auto !== 'always') return;
+  console.log('[english-agent] SPA url change → re-translate', { from, to: location.href });
+  if (moduleState.status === 'active') {
+    togglePageTranslation(); // stop & undo
+  }
+  const mode = currentDomainRule.mode;
+  setTimeout(async () => {
+    // 期间用户可能改了规则；二次校验
+    if (currentDomainRule?.auto !== 'always') return;
+    if (moduleState.status !== 'idle') return;
+    const detection = await refreshPageLangDetection();
+    if (shouldSkipForSameLanguage(detection)) {
+      console.log(
+        `[english-agent] SPA re-translate skipped: page lang ${detection.lang} matches user`,
+      );
+      return;
+    }
+    togglePageTranslation(mode);
+  }, URL_CHANGE_RETRANSLATE_DELAY_MS);
+}
+
+function installHistoryHooksOnce(): void {
+  if (historyHooksInstalled) return;
+  historyHooksInstalled = true;
+  const origPush = history.pushState;
+  const origReplace = history.replaceState;
+  history.pushState = function patchedPushState(...args) {
+    const ret = origPush.apply(this, args as Parameters<typeof origPush>);
+    queueMicrotask(handleSpaUrlChange);
+    return ret;
+  };
+  history.replaceState = function patchedReplaceState(...args) {
+    const ret = origReplace.apply(this, args as Parameters<typeof origReplace>);
+    queueMicrotask(handleSpaUrlChange);
+    return ret;
+  };
+  window.addEventListener('popstate', handleSpaUrlChange);
+}
+
 const FAB_POSITION_KEY = 'english-agent:fab-pos';
+
+/** "rule = undefined" 表示首次还没读完 storage，避免 flash 出 FAB 后又因 never 收掉 */
+type RuleLoadState = DomainRule | null | 'loading';
 
 export function TranslateFab() {
   const s = useSyncExternalStore(subscribeModuleState, getModuleState, getModuleState);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [rule, setRule] = useState<RuleLoadState>('loading');
+  const autoStartedRef = useRef(false);
+  const hostname = normalizeHostname(location.hostname);
   const drag = useDraggable({
     initial: { x: 20, y: 20 },
     anchor: 'bottom-right',
     persistKey: FAB_POSITION_KEY,
   });
+
+  // 读规则 + 订阅跨 tab / 设备变更
+  useEffect(() => {
+    let cancelled = false;
+    getDomainRule(hostname).then((r) => {
+      if (!cancelled) setRule(r);
+    });
+    const unsub = subscribeDomainRule(hostname, (r) => setRule(r));
+    return () => {
+      cancelled = true;
+      unsub();
+    };
+  }, [hostname]);
+
+  // 把当前规则同步到模块级，供 SPA URL 监听用；同时安装 history hook
+  useEffect(() => {
+    if (rule === 'loading') return;
+    syncCurrentDomainRule(rule);
+    installHistoryHooksOnce();
+  }, [rule]);
+
+  // 订阅页面语言检测结果 + 首次询问 banner 的 dismissed 状态
+  const pageLangDetection = useSyncExternalStore(
+    subscribePageLangDetection,
+    getCurrentPageLangDetection,
+    getCurrentPageLangDetection,
+  );
+  const promptDismissedState = useSyncExternalStore(
+    subscribePromptDismissed,
+    getPromptDismissed,
+    getPromptDismissed,
+  );
+  const neverConfirm = useSyncExternalStore(
+    subscribeNeverConfirm,
+    getNeverConfirmState,
+    getNeverConfirmState,
+  );
+
+  // 一律在 mount 时跑一次检测 —— 不管有没有 rule，banner 也需要这份结果
+  useEffect(() => {
+    void refreshPageLangDetection();
+  }, []);
+
+  // auto='always' 且检测到位 → 同语言跳过，否则翻译
+  // 用 ref 守门：用户后续手动撤销不会触发再翻译；只在初次"规则+检测都就绪"时跑一次
+  useEffect(() => {
+    if (rule === 'loading') return;
+    if (rule?.auto !== 'always') return;
+    if (pageLangDetection === null) return; // 等检测完
+    if (autoStartedRef.current) return;
+    autoStartedRef.current = true;
+    if (shouldSkipForSameLanguage(pageLangDetection)) {
+      console.log(
+        `[english-agent] auto-translate skipped: page lang ${pageLangDetection.lang} matches user`,
+      );
+      return;
+    }
+    if (moduleState.status === 'idle') {
+      togglePageTranslation(rule.mode);
+    }
+  }, [rule, pageLangDetection]);
+
+  // 翻译被触发（任何路径）→ banner 自动消失
+  useEffect(() => {
+    if (s.status === 'active' && !promptDismissedState) {
+      setPromptDismissed(true);
+    }
+  }, [s.status, promptDismissedState]);
+
+  // loading 阶段：什么都不渲染（避免闪烁）
+  if (rule === 'loading') return null;
+  // never 模式：FAB 不渲染，但 NeverConfirm banner 仍可能出现（用户刚刚点完"从不"）
+  // 用 isNever 而非 early return；下面的 fragment 会根据它条件渲染 FAB
+  const isNever = rule?.auto === 'never';
 
   function onClick(e: React.MouseEvent) {
     if (drag.consumeDragClick()) {
@@ -874,20 +1165,122 @@ export function TranslateFab() {
     togglePageTranslation(mode);
   }
 
+  /**
+   * 三态切换：
+   *   - always: 写入 { auto:'always', mode: 优先沿用本会话最后选的 mode }
+   *   - session: 删规则；本次状态不动（用户当前可能正翻着，让它继续）
+   *   - never: 写入 { auto:'never', mode 保留 }；如果当前正翻 → stop + undo
+   *
+   * mode 选取的 fallback 链（"你现在怎么看，以后就怎么看"）：
+   *   1. 本会话用户最后一次手动选的 mode（lastUsedMode）
+   *   2. 已存在规则里记录的 mode
+   *   3. 'article'（默认）
+   */
+  function onChangeRule(next: 'always' | 'session' | 'never') {
+    // 闭包捕获的 rule 类型不被 early return narrowing 影响，显式收窄一次
+    const ruleObj = rule !== 'loading' ? rule : null;
+    const mode: TranslateMode = lastUsedMode ?? ruleObj?.mode ?? 'article';
+    if (next === 'always') {
+      void setDomainRule(hostname, { auto: 'always', mode });
+    } else if (next === 'never') {
+      // 走撤销窗口路径 —— 给用户 5s 反悔机会 + 显式告知右键恢复入口
+      triggerNeverWithConfirmation(hostname, mode);
+      if (moduleState.status === 'active') togglePageTranslation();
+    } else {
+      void clearDomainRule(hostname);
+    }
+    setMenuOpen(false);
+  }
+
+  const ruleKind: 'always' | 'session' | 'never' =
+    rule?.auto === 'always' ? 'always' : rule?.auto === 'never' ? 'never' : 'session';
+
+  // "总是自动翻译"如果被点，会以哪种 mode 落地（用于 UI 提示用户）
+  // 此时 rule 已经被前面的 early return 收窄为 DomainRule | null
+  const effectiveMode: TranslateMode = lastUsedMode ?? rule?.mode ?? 'article';
+
+  // 只在"规则=always 且检测出同语言"时给 hint —— 用户处于"我以为它会翻但没翻"
+  // 的认知缺口，这时候需要解释；其它情况静默。
+  const pageSameAsUser = shouldSkipForSameLanguage(pageLangDetection);
+  const pageLangHint: string | null =
+    ruleKind === 'always' && pageSameAsUser
+      ? `本页${languageLabelZh(pageLangDetection?.lang ?? null)}，已跳过`
+      : null;
+
+  // === 首次外语页询问 banner 显示条件 ===
+  // 全部条件:
+  //   - status idle（翻译没在跑）
+  //   - 该域名无规则（rule===null；'always'/'never' 都不弹）
+  //   - 本会话还没弹过 / 没被 dismiss
+  //   - menuOpen=false（不和 ModeMenu 抢同一锚点）
+  //   - neverConfirm 没在显示（不和"已禁用"提示共存）
+  //   - 用户主语言 === 'zh'：当前翻译器输出固定 zh，非中文用户弹了也没意义
+  //   - 检测可信源（CLD3）：避免 <html lang> 噪音导致误弹
+  //   - 检测出的 lang 跟用户语言不同
+  const userIsZh = getUserPrimaryLang() === 'zh';
+  const shouldShowPrompt =
+    s.status === 'idle' &&
+    rule === null &&
+    !promptDismissedState &&
+    !menuOpen &&
+    neverConfirm === null &&
+    userIsZh &&
+    pageLangDetection?.source === 'cld3' &&
+    !!pageLangDetection.lang &&
+    !isSamePrimary(pageLangDetection.lang, getUserPrimaryLang());
+
+  function onPromptAlways() {
+    void setDomainRule(hostname, { auto: 'always', mode: effectiveMode });
+    togglePageTranslation(effectiveMode);
+    setPromptDismissed(true);
+  }
+  function onPromptJustOnce() {
+    togglePageTranslation(effectiveMode);
+    setPromptDismissed(true);
+  }
+  function onPromptNever() {
+    // 同样走撤销窗口；setPromptDismissed 由 confirm 计时器到期时统一设置
+    triggerNeverWithConfirmation(hostname, effectiveMode);
+  }
+  function onPromptClose() {
+    setPromptDismissed(true);
+  }
+
   return (
-    <FabButton
-      status={s.status}
-      positionStyle={drag.positionStyle()}
-      menuOpen={menuOpen}
-      onMouseDown={drag.onMouseDown}
-      onClick={onClick}
-      onChevronClick={(e) => {
-        e.stopPropagation();
-        setMenuOpen((o) => !o);
-      }}
-      onCloseMenu={() => setMenuOpen(false)}
-      onPickMode={onClickMode}
-    />
+    <>
+      {!isNever && (
+        <FabButton
+          status={s.status}
+          positionStyle={drag.positionStyle()}
+          menuOpen={menuOpen}
+          onMouseDown={drag.onMouseDown}
+          onClick={onClick}
+          onChevronClick={(e) => {
+            e.stopPropagation();
+            setMenuOpen((o) => !o);
+          }}
+          onCloseMenu={() => setMenuOpen(false)}
+          onPickMode={onClickMode}
+          hostname={hostname}
+          ruleKind={ruleKind}
+          effectiveMode={effectiveMode}
+          pageLangHint={pageLangHint}
+          onChangeRule={onChangeRule}
+          promptVisible={shouldShowPrompt}
+          promptLangLabel={languageLabelZh(pageLangDetection?.lang ?? null)}
+          onPromptAlways={onPromptAlways}
+          onPromptJustOnce={onPromptJustOnce}
+          onPromptNever={onPromptNever}
+          onPromptClose={onPromptClose}
+        />
+      )}
+      {neverConfirm && (
+        <NeverConfirmBanner
+          hostname={hostname}
+          onUndo={() => undoNever(hostname)}
+        />
+      )}
+    </>
   );
 }
 
@@ -900,6 +1293,17 @@ function FabButton({
   onChevronClick,
   onCloseMenu,
   onPickMode,
+  hostname,
+  ruleKind,
+  effectiveMode,
+  pageLangHint,
+  onChangeRule,
+  promptVisible,
+  promptLangLabel,
+  onPromptAlways,
+  onPromptJustOnce,
+  onPromptNever,
+  onPromptClose,
 }: {
   status: FabStatus;
   positionStyle: Record<string, number>;
@@ -909,6 +1313,19 @@ function FabButton({
   onChevronClick: (e: React.MouseEvent) => void;
   onCloseMenu: () => void;
   onPickMode: (mode: TranslateMode) => void;
+  hostname: string;
+  ruleKind: 'always' | 'session' | 'never';
+  effectiveMode: TranslateMode;
+  /** "always 规则下检测到同语言"时的 hint 文案；其它情况 null */
+  pageLangHint: string | null;
+  onChangeRule: (next: 'always' | 'session' | 'never') => void;
+  /** 首次外语页询问 banner 可见性与回调 */
+  promptVisible: boolean;
+  promptLangLabel: string;
+  onPromptAlways: () => void;
+  onPromptJustOnce: () => void;
+  onPromptNever: () => void;
+  onPromptClose: () => void;
 }) {
   // 不显示进度数字 —— 用户反馈"没必要给用户看到"
   const label = status === 'active' ? '撤销翻译' : '翻译';
@@ -924,9 +1341,30 @@ function FabButton({
         alignItems: 'center',
       }}
     >
-      {/* 下拉菜单 */}
-      {menuOpen && status !== 'active' && (
-        <ModeMenu onCloseMenu={onCloseMenu} onPickMode={onPickMode} />
+      {/* 下拉菜单 —— active 时也允许打开（用于改域名规则；模式切换仍只在 idle 显示） */}
+      {menuOpen && (
+        <ModeMenu
+          onCloseMenu={onCloseMenu}
+          onPickMode={onPickMode}
+          showModes={status !== 'active'}
+          hostname={hostname}
+          ruleKind={ruleKind}
+          effectiveMode={effectiveMode}
+          pageLangHint={pageLangHint}
+          onChangeRule={onChangeRule}
+        />
+      )}
+
+      {/* 首次外语页询问 banner —— 同样浮在 FAB 上方，与 menu 互斥（shouldShowPrompt 已 gate） */}
+      {promptVisible && (
+        <TranslatePrompt
+          hostname={hostname}
+          langLabel={promptLangLabel}
+          onAlways={onPromptAlways}
+          onJustOnce={onPromptJustOnce}
+          onNever={onPromptNever}
+          onClose={onPromptClose}
+        />
       )}
 
       {/* 主按钮 + chevron 分体显示，但同一外壳 */}
@@ -965,29 +1403,27 @@ function FabButton({
           <Icon size={14} />
           {label}
         </button>
-        {status !== 'active' && (
-          <button
-            type="button"
-            // data-attr 让 ModeMenu 的 outside-click 监听把 chevron 当成"内部"，
-            // 否则 capture-phase pointerdown 先 set false，紧随的 click 再 toggle，永远关不掉。
-            data-ea-mode-trigger="true"
-            onMouseDown={(e) => e.stopPropagation()}
-            onClick={onChevronClick}
-            aria-label="切换翻译模式"
-            style={{
-              padding: '10px 10px 10px 4px',
-              background: 'transparent',
-              color: 'inherit',
-              border: 'none',
-              borderLeft: '1px solid rgba(255,255,255,0.15)',
-              cursor: 'pointer',
-              display: 'inline-flex',
-              alignItems: 'center',
-            }}
-          >
-            <ChevronDown size={14} />
-          </button>
-        )}
+        <button
+          type="button"
+          // data-attr 让 ModeMenu 的 outside-click 监听把 chevron 当成"内部"，
+          // 否则 capture-phase pointerdown 先 set false，紧随的 click 再 toggle，永远关不掉。
+          data-ea-mode-trigger="true"
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={onChevronClick}
+          aria-label="切换翻译模式或域名规则"
+          style={{
+            padding: '10px 10px 10px 4px',
+            background: 'transparent',
+            color: 'inherit',
+            border: 'none',
+            borderLeft: '1px solid rgba(255,255,255,0.15)',
+            cursor: 'pointer',
+            display: 'inline-flex',
+            alignItems: 'center',
+          }}
+        >
+          <ChevronDown size={14} />
+        </button>
       </div>
     </div>
   );
@@ -996,9 +1432,24 @@ function FabButton({
 function ModeMenu({
   onCloseMenu,
   onPickMode,
+  showModes,
+  hostname,
+  ruleKind,
+  effectiveMode,
+  pageLangHint,
+  onChangeRule,
 }: {
   onCloseMenu: () => void;
   onPickMode: (mode: TranslateMode) => void;
+  /** 翻译进行中时关掉"切换模式"分区 —— 改模式要先撤销 */
+  showModes: boolean;
+  hostname: string;
+  ruleKind: 'always' | 'session' | 'never';
+  /** "总是自动翻译"将以哪种 mode 落地（沿用 lastUsedMode → 已有 rule.mode → article） */
+  effectiveMode: TranslateMode;
+  /** "always 但跳过了"时的解释 hint；null 时不附加 */
+  pageLangHint: string | null;
+  onChangeRule: (next: 'always' | 'session' | 'never') => void;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -1023,9 +1474,29 @@ function ModeMenu({
     };
   }, [onCloseMenu]);
 
-  const items: Array<{ mode: TranslateMode; label: string; desc: string }> = [
+  const modeItems: Array<{ mode: TranslateMode; label: string; desc: string }> = [
     { mode: 'article', label: '翻译正文', desc: '只翻文章内容，跳过 nav / 评论 / 边栏' },
     { mode: 'page', label: '翻译全页', desc: '整页所有段落，含 UI 文案 / 边栏' },
+  ];
+
+  const modeLabel = effectiveMode === 'page' ? '全页' : '正文';
+  const ruleItems: Array<{
+    kind: 'always' | 'session' | 'never';
+    label: string;
+    desc: string;
+  }> = [
+    {
+      kind: 'always',
+      label: '总是自动翻译',
+      // 显式告诉用户：以 lastUsedMode 落地。点之前用户大概率刚翻过一次正文或全页，
+      // 这里复述他刚做的事让"记住"这件事不黑箱。
+      // pageLangHint 在"规则=always 但跳过了"时附加，解释为啥没翻
+      desc:
+        `打开 / 跳转就自动翻（${modeLabel}）` +
+        (pageLangHint ? ` · ${pageLangHint}` : ''),
+    },
+    { kind: 'session', label: '仅本次', desc: '不记忆，下次需要手动点' },
+    { kind: 'never', label: '从不在此站翻译', desc: '隐藏 FAB，避开复杂 WebApp' },
   ];
 
   return (
@@ -1036,7 +1507,7 @@ function ModeMenu({
         // 跟父容器底边对齐再上抬 6px，刚好贴在 FAB 上方
         bottom: 'calc(100% + 6px)',
         right: 0,
-        minWidth: 200,
+        minWidth: 240,
         background: '#fff',
         color: '#111',
         fontFamily: 'system-ui, -apple-system, sans-serif',
@@ -1047,29 +1518,281 @@ function ModeMenu({
         overflow: 'hidden',
       }}
     >
-      {items.map((item) => (
+      {showModes && (
+        <>
+          {modeItems.map((item) => (
+            <button
+              key={item.mode}
+              type="button"
+              onClick={() => onPickMode(item.mode)}
+              style={menuItemStyle}
+              onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(0,0,0,0.04)')}
+              onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+            >
+              <div style={{ fontWeight: 500 }}>{item.label}</div>
+              <div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>{item.desc}</div>
+            </button>
+          ))}
+          <div style={dividerStyle} />
+        </>
+      )}
+
+      <div style={sectionLabelStyle}>
+        在 <span style={{ color: '#111', fontWeight: 600 }}>{hostname}</span> 上
+      </div>
+      {ruleItems.map((item) => {
+        const selected = item.kind === ruleKind;
+        return (
+          <button
+            key={item.kind}
+            type="button"
+            onClick={() => onChangeRule(item.kind)}
+            style={menuItemStyle}
+            onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(0,0,0,0.04)')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span
+                aria-hidden
+                style={{
+                  display: 'inline-block',
+                  width: 12,
+                  height: 12,
+                  borderRadius: '50%',
+                  border: '1.5px solid #999',
+                  background: selected ? '#111' : 'transparent',
+                  boxShadow: selected ? 'inset 0 0 0 2px #fff' : 'none',
+                  flex: 'none',
+                }}
+              />
+              <span style={{ fontWeight: selected ? 600 : 500 }}>{item.label}</span>
+            </div>
+            <div style={{ fontSize: 11, color: '#666', marginTop: 2, paddingLeft: 20 }}>
+              {item.desc}
+            </div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+const menuItemStyle: React.CSSProperties = {
+  display: 'block',
+  width: '100%',
+  padding: '8px 12px',
+  background: 'transparent',
+  border: 0,
+  cursor: 'pointer',
+  textAlign: 'left',
+  color: 'inherit',
+  font: 'inherit',
+};
+
+const dividerStyle: React.CSSProperties = {
+  height: 1,
+  background: 'rgba(0,0,0,0.08)',
+  margin: '4px 0',
+};
+
+const sectionLabelStyle: React.CSSProperties = {
+  padding: '8px 12px 4px',
+  fontSize: 11,
+  color: '#666',
+  textTransform: 'none',
+  letterSpacing: 0,
+};
+
+/**
+ * 首次外语页询问 banner —— Chrome 原生翻译条同款的产品形态，浮在 FAB 上方。
+ *
+ * 三个动作 + 关闭：
+ *   - "总是翻译" → 写 always 规则 + 立刻翻译
+ *   - "仅本次"   → 立刻翻译，不写规则
+ *   - "从不"     → 写 never 规则（下次刷新连 FAB 都不出）
+ *   - X         → 仅 dismiss（本 lifetime 不再弹）
+ *
+ * 用 data-attr `eag-prompt-root` 标记容器，给未来 outside-click 监听 / 调试用。
+ */
+function TranslatePrompt({
+  hostname,
+  langLabel,
+  onAlways,
+  onJustOnce,
+  onNever,
+  onClose,
+}: {
+  hostname: string;
+  langLabel: string;
+  onAlways: () => void;
+  onJustOnce: () => void;
+  onNever: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      data-eag-prompt-root="true"
+      style={{
+        position: 'absolute',
+        bottom: 'calc(100% + 8px)',
+        right: 0,
+        width: 300,
+        background: '#fff',
+        color: '#111',
+        fontFamily: 'system-ui, -apple-system, sans-serif',
+        fontSize: 13,
+        border: '1px solid rgba(0,0,0,0.08)',
+        borderRadius: 10,
+        boxShadow: '0 12px 32px rgba(0,0,0,0.18)',
+        animation: 'eag-prompt-in .18s cubic-bezier(.2,.8,.3,1.05) both',
+      }}
+    >
+      <style>{`@keyframes eag-prompt-in {
+        from { opacity: 0; transform: translateY(6px) scale(.97); }
+        to   { opacity: 1; transform: translateY(0) scale(1); }
+      }`}</style>
+      <button
+        type="button"
+        onClick={onClose}
+        aria-label="关闭"
+        style={{
+          position: 'absolute',
+          top: 6,
+          right: 6,
+          width: 22,
+          height: 22,
+          border: 'none',
+          background: 'transparent',
+          color: '#888',
+          cursor: 'pointer',
+          fontSize: 16,
+          lineHeight: 1,
+          padding: 0,
+        }}
+      >
+        ×
+      </button>
+      <div style={{ padding: '12px 14px 6px' }}>
+        <div style={{ fontSize: 13.5, fontWeight: 500 }}>
+          检测到这是<span style={{ color: '#0b8f5a' }}>{langLabel}</span>页面
+        </div>
+        <div style={{ fontSize: 11.5, color: '#666', marginTop: 4 }}>
+          要翻译 <span style={{ fontWeight: 500, color: '#333' }}>{hostname}</span> 吗？
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: 6, padding: '4px 10px 12px', flexWrap: 'wrap' }}>
         <button
-          key={item.mode}
           type="button"
-          onClick={() => onPickMode(item.mode)}
+          onClick={onAlways}
           style={{
-            display: 'block',
-            width: '100%',
-            padding: '8px 12px',
-            background: 'transparent',
-            border: 0,
+            flex: '1 1 auto',
+            minWidth: 88,
+            padding: '7px 10px',
+            background: '#111',
+            color: '#fff',
+            border: 'none',
+            borderRadius: 7,
+            fontSize: 12.5,
+            fontWeight: 500,
             cursor: 'pointer',
-            textAlign: 'left',
-            color: 'inherit',
-            font: 'inherit',
           }}
-          onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(0,0,0,0.04)')}
-          onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
         >
-          <div style={{ fontWeight: 500 }}>{item.label}</div>
-          <div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>{item.desc}</div>
+          总是翻译
         </button>
-      ))}
+        <button
+          type="button"
+          onClick={onJustOnce}
+          style={promptSecondaryBtnStyle}
+        >
+          仅本次
+        </button>
+        <button
+          type="button"
+          onClick={onNever}
+          style={promptSecondaryBtnStyle}
+        >
+          从不
+        </button>
+      </div>
+    </div>
+  );
+}
+
+const promptSecondaryBtnStyle: React.CSSProperties = {
+  flex: '1 1 auto',
+  minWidth: 64,
+  padding: '7px 10px',
+  background: '#fff',
+  color: '#333',
+  border: '1px solid rgba(0,0,0,0.12)',
+  borderRadius: 7,
+  fontSize: 12.5,
+  fontWeight: 500,
+  cursor: 'pointer',
+};
+
+/**
+ * 用户刚刚把本站设为"从不翻译"后显示的临时确认条 —— 给一个 5s 撤销窗口
+ * 和一条永久恢复路径（右键菜单），避免"我点错了怎么办"的死胡同。
+ *
+ * 独立浮在视口右下角；不依赖 FAB（FAB 此时已隐藏）。
+ */
+function NeverConfirmBanner({
+  hostname,
+  onUndo,
+}: {
+  hostname: string;
+  onUndo: () => void;
+}) {
+  return (
+    <div
+      data-eag-never-confirm="true"
+      style={{
+        position: 'fixed',
+        right: 20,
+        bottom: 20,
+        zIndex: 2147483647,
+        width: 300,
+        background: '#101012',
+        color: '#fff',
+        fontFamily: 'system-ui, -apple-system, sans-serif',
+        fontSize: 13,
+        borderRadius: 10,
+        boxShadow: '0 12px 32px rgba(0,0,0,0.32)',
+        padding: '12px 14px',
+        animation: 'eag-never-in .18s cubic-bezier(.2,.8,.3,1.05) both',
+      }}
+    >
+      <style>{`@keyframes eag-never-in {
+        from { opacity: 0; transform: translateY(8px); }
+        to   { opacity: 1; transform: translateY(0); }
+      }`}</style>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span style={{ color: '#6ddca0', fontWeight: 700 }}>✓</span>
+        <span style={{ flex: 1, fontWeight: 500 }}>
+          已在 <span style={{ color: '#9ec5ff' }}>{hostname}</span> 上禁用
+        </span>
+        <button
+          type="button"
+          onClick={onUndo}
+          style={{
+            background: 'transparent',
+            color: '#9ec5ff',
+            border: 'none',
+            cursor: 'pointer',
+            fontSize: 13,
+            fontWeight: 600,
+            padding: '2px 4px',
+            textDecoration: 'underline',
+            textUnderlineOffset: 2,
+          }}
+        >
+          撤销
+        </button>
+      </div>
+      <div style={{ fontSize: 11, color: '#9a9a9c', marginTop: 6, lineHeight: 1.5 }}>
+        以后右键菜单 → <span style={{ color: '#cfcfd1' }}>"重置本站翻译规则"</span> 可随时恢复
+      </div>
     </div>
   );
 }

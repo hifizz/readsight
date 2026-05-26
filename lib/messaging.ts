@@ -67,6 +67,10 @@ export type BackgroundMessage =
     }
   /** Background → content script：右键菜单 / 快捷键触发的"开关全文翻译" */
   | { type: 'TOGGLE_TRANSLATE' }
+  /** Background → content script：右键菜单"翻译选中内容"触发，让 content 重抓 selection 打开 Dialog */
+  | { type: 'TRANSLATE_SELECTION' }
+  /** Background → content script：右键菜单"重置本站翻译规则"，通用恢复入口（含 never→可见） */
+  | { type: 'RESET_DOMAIN_RULE' }
   /** Content → background：翻译状态切换通知，让 background 更新右键菜单标题 */
   | { type: 'TRANSLATE_STATE_CHANGED'; payload: { active: boolean } };
 

@@ -18,6 +18,7 @@ import { resolveLemma } from '@/lib/lemmatize';
 import { Sparkles } from 'lucide-react';
 import { TranslateFab, togglePageTranslation, onTranslateStateChange } from './translate';
 import { SelectionPopup, openPopup, useIsPopupOpen } from './popup';
+import { clearDomainRule } from '@/lib/domain-rules';
 
 const BACKEND = import.meta.env.WXT_BACKEND_URL ?? 'http://localhost:4010';
 const KNOWN_ITEMS_KEY = 'english-agent:known-items';
@@ -98,17 +99,68 @@ export default defineContentScript({
     // 被动重逢扫描（PRD §5.2 / §8.2 弱正信号）—— 在 idle 时扫一次
     schedulePassiveScan();
 
-    // 接 background 转过来的消息：回原文高亮（PRD §8.3）+ 右键 / 快捷键切翻译
+    // 接 background 转过来的消息：回原文高亮（PRD §8.3）+ 右键 / 快捷键切翻译 + 划词右键
     chrome.runtime.onMessage.addListener((message: BackgroundMessage) => {
       if (message.type === 'HIGHLIGHT_ANCHOR') {
         highlightAnchor(message.payload);
       } else if (message.type === 'TOGGLE_TRANSLATE') {
         togglePageTranslation();
+      } else if (message.type === 'TRANSLATE_SELECTION') {
+        openPopupFromCurrentSelection();
+      } else if (message.type === 'RESET_DOMAIN_RULE') {
+        // 通用恢复：清掉本域名规则。subscribeDomainRule 会通知 FAB 重渲染，
+        // 'never' 被清后 FAB 重新出现，'always' 被清后下次刷新不再自动翻。
+        // 注：当前页面已经在跑的翻译不会因此停止 —— 用户可以手动撤销。
+        void clearDomainRule(location.hostname);
+        console.log('[english-agent] domain rule reset for', location.hostname);
       }
       return false;
     });
   },
 });
+
+/**
+ * 从 window.getSelection() 重新抓选区并打开 Dialog —— 右键菜单"翻译选中内容"入口。
+ *
+ * 浏览器在右键菜单展示时通常保留 selection，但 user agent 行为有差异：
+ * 兜底 1 = 直接读 selection；如果选区已 collapse，console.warn 提示。
+ *
+ * 走和 Pill click 一样的 buildSelectionContext + openPopup 路径，
+ * 锚点 rect 取 selection 的 BoundingClientRect，这样 Dialog 紧贴选区显示。
+ */
+function openPopupFromCurrentSelection(): void {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed) {
+    console.warn('[english-agent] TRANSLATE_SELECTION: no active selection');
+    return;
+  }
+  const text = sel.toString().trim();
+  if (!text) {
+    console.warn('[english-agent] TRANSLATE_SELECTION: empty selection text');
+    return;
+  }
+  const range = sel.getRangeAt(0);
+  // 右键菜单可能在导航 / sidebar 上触发，这里要求选区落在文章块里 ——
+  // 跟 Pill 一致的约束，避免把"菜单标题"这类噪音也送进 Dialog。
+  const block = findContentBlock(range.startContainer);
+  if (!block) {
+    console.warn('[english-agent] TRANSLATE_SELECTION: selection not in a content block');
+    return;
+  }
+  const ctx = buildSelectionContext(text, range, block);
+  if (!ctx) return;
+  try {
+    if (ctx.selection.type === 'word') {
+      activelyQueriedLemmas.add(resolveLemma(ctx.selection.text));
+    }
+  } catch (err) {
+    console.warn('[english-agent] resolveLemma in TRANSLATE_SELECTION threw', err);
+  }
+  const rect = range.getBoundingClientRect();
+  openPopup(ctx, {
+    rect: { top: rect.top, left: rect.left, right: rect.right, bottom: rect.bottom },
+  });
+}
 
 /**
  * 找到 anchor 指向的位置 + 滚到 + 闪黄高亮 1.5s（PRD §8.3）。
