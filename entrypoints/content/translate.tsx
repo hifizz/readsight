@@ -1239,7 +1239,16 @@ export function TranslateFab() {
     setMenuOpen(false);
     // FAB 主按钮默认走"翻译全页"——对现代 React 站点 / 复杂版面更稳；
     // 想要严格的"正文"模式仍可从菜单显式选择。
+    //
+    // idle→active 时顺手写一条 always 域名规则："点击翻译即记住"
+    // 下次进同站自动翻。撤销路径不触碰规则（防止"只是本次想看原文"被
+    // 永久取消订阅）。已有 always 规则就保持；rule=never 时 FAB 根本不渲染，
+    // 不会走到这。
+    const willActivate = moduleState.status === 'idle';
     togglePageTranslation('page');
+    if (willActivate) {
+      void setDomainRule(hostname, { auto: 'always', mode: 'page' });
+    }
   }
 
   function onClickMode(mode: TranslateMode) {
