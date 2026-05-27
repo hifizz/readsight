@@ -39,6 +39,15 @@ const BLOCK_SELECTOR = 'p, li, blockquote, h1, h2, h3, h4, h5, h6, dd';
 const ARTICLE_ROOT_SELECTOR = 'article, main, [role="main"]';
 /** 内联标签：内容当作"代码 / 标识符"占位符发给 LLM，翻译完原样恢复 */
 const INLINE_PRESERVE_SELECTOR = 'code, kbd, samp, var, tt';
+/**
+ * 不可见 / 非渲染节点：抓文本时跳过整棵子树。
+ * - script/style/noscript：内容不渲染给用户，且常被站点用来塞 SSR 数据 / CSS
+ *   （比如 GitHub 的 `<script type="application/json">` contentful 数据塞在
+ *   <main> 里），不排除会把整个 JSON 当文本翻译，且让外层 block 异常变大
+ *   把真正的内容都"祖先覆盖"掉
+ * - template：HTML 模板内容不参与渲染
+ */
+const NON_RENDERED_SELECTOR = 'script, style, noscript, template';
 /** 视口预测：上下 300px 提前进入翻译队列，用户滚动时已经翻译好可见 */
 const VIEWPORT_ROOT_MARGIN = '300px 0px 300px 0px';
 /**
@@ -77,6 +86,24 @@ const MIN_BLOCK_LENGTH = 30;
 const BATCH_TIMEOUT_MS = 30_000;
 const TRANSLATION_CLASS = 'english-agent-translation';
 const BLOCK_ID_ATTR = 'data-eag-id';
+
+/**
+ * 元素是否实际渲染（不被 display:none / 隐藏祖先遮蔽）。
+ *
+ * offsetParent === null 是经典 display:none 检测；offsetWidth/Height
+ * 都为 0 抓位置类 display:none。<body> 自身 offsetParent 为 null 是特例，
+ * 单独豁免。`<details>` 折叠态下子节点也会变 offsetParent=null，符合期望
+ * （折叠态内容不可见，没必要翻译）。
+ *
+ * 注意：本函数会触发 layout，所以仅在抽取阶段（不频繁）调用。
+ */
+function isRendered(el: HTMLElement): boolean {
+  if (el === document.body) return true;
+  if (el.offsetParent !== null) return true;
+  // offsetParent 为 null 时仍可能是 fixed/positioned 可见元素，用 rect 兜底
+  const r = el.getBoundingClientRect();
+  return r.width > 0 || r.height > 0;
+}
 
 /** 找文章正文容器，找不到 fallback 到 body */
 function findArticleRoot(): HTMLElement {
@@ -162,6 +189,9 @@ function buildTextWithPreserves(
   }
   if (node.nodeType !== Node.ELEMENT_NODE) return '';
   const el = node as Element;
+  // 跳过整棵 script/style/noscript/template 子树 —— 这些内容不渲染给用户，
+  // 收进 block.text 会污染翻译（GitHub <main> 里有 SSR JSON 塞在 script 里）
+  if (el.matches(NON_RENDERED_SELECTOR)) return '';
   if (el.matches(INLINE_PRESERVE_SELECTOR)) {
     counter.n += 1;
     const placeholder = `⟪C${counter.n}⟫`;
@@ -316,7 +346,16 @@ function extractPageBlocks(
   while ((node = walker.nextNode())) {
     const text = node.nodeValue ?? '';
     if (text.trim().length < 2) continue;
-    let cur: HTMLElement | null = (node as Text).parentElement;
+    const parent = (node as Text).parentElement;
+    // 文本在 script/style/noscript/template 内 —— 不渲染、不参与候选块。
+    // 不挡的话外层 PAGE_BLOCK_TAG 祖先（常常是 main/section/div）会被当作
+    // 单元加入 units，进而"祖先覆盖"掉真正可见的子内容。
+    if (parent?.closest(NON_RENDERED_SELECTOR)) continue;
+    // 隐藏元素跳过 —— display:none / aria-hidden 的下拉菜单 a11y 标题
+    // （GitHub header 里 "Navigation Menu" / "Saved searches" 这种）抽出来
+    // 翻译会把译文注入到 visible 容器里，造成顶部一堆乱七八糟的小字。
+    if (parent && !isRendered(parent)) continue;
+    let cur: HTMLElement | null = parent;
     let unit: HTMLElement | null = null;
     while (cur && cur !== root && cur !== document.body) {
       if (PAGE_BLOCK_TAGS.has(cur.tagName)) {
