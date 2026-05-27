@@ -82,6 +82,26 @@ const EXCLUDE_ANCESTOR_SELECTOR = [
   '.newsletter',
 ].join(',');
 const MIN_BLOCK_LENGTH = 30;
+/**
+ * H1-H6 单独走低阈值。常见文章 H1 / Wikipedia 章节 H2-H3 多在 5-20 字符，
+ * 用 MIN_BLOCK_LENGTH=30 会全砍。≥2 兜底过滤纯数字/单字符噪声（"1"/"2"），
+ * 内容里靠后端 shouldSkip(text) 二次防御（无字母即跳）。
+ */
+const MIN_HEADING_LENGTH = 2;
+/**
+ * Readability allowlist 在"非 heading 候选块"中的最低覆盖率。
+ * 低于此值视为 Readability 错把"非文章"页面（Q&A 列表 / repo 文件视图等）
+ * 识别成 article —— 此时丢弃 allowlist，仅靠 EXCLUDE_ANCESTOR + linkRatio
+ * + MIN_LEN 兜底。
+ *
+ * SO 实测：300 候选 → Readability 只认 3 个 (1%) → 丢弃 allowlist → 抽到 ~280
+ * Wikipedia: 92% 命中 → 保留 allowlist。
+ *
+ * 阈值 0.3 ≈ "页面里至少 30% 的看起来像段落的内容能被 Readability 认出来
+ * 才算它判断对了"，留缓冲不卡边界。
+ */
+const READABILITY_COVERAGE_FLOOR = 0.3;
+const HEADING_TAGS = new Set(['H1', 'H2', 'H3', 'H4', 'H5', 'H6']);
 // DeepSeek 翻 12 段 ~2-4s + 网络；30s 给足重试 / 兜底链余量。
 const BATCH_TIMEOUT_MS = 30_000;
 const TRANSLATION_CLASS = 'english-agent-translation';
@@ -298,24 +318,60 @@ export function extractArticleBlocks(
     return extractPageBlocks(document.body, EXCLUDE_ANCESTOR_SELECTOR, MIN_BLOCK_LENGTH);
   }
 
-  // 初始扫：BLOCK_SELECTOR + Readability allowlist 严格路径（保持精读体验）
+  // 初始扫：两阶段。
+  //   阶段 1：收集所有候选块（通过 EXCLUDE_ANCESTOR + 长度 + linkRatio 三关），
+  //          顺手记下"是否落在 Readability allowlist 内"。
+  //   阶段 2：根据 allowlist 在"非 heading 候选"中的覆盖率决定是否启用过滤 ——
+  //          Readability 把 Q&A / repo 类页面识别成 article 时，allowlist 极窄会
+  //          砍掉绝大多数候选，此时跳过 allowlist（动态 fallback）。
+  //
+  // Heading（H1-H6）一律走特殊路径：
+  //   - 在 ARTICLE_ROOT 内 → 豁免 EXCLUDE_ANCESTOR (TC 等站把 H1 放 <header>)
+  //   - 用 MIN_HEADING_LENGTH 取代 MIN_BLOCK_LENGTH（短标题"History"/"A Chain Reaction"）
+  //   - 跳过 linkRatio（H1 常被 wrap 在 <a> 里）
+  //   - 跳过 allowlist 过滤（Readability 倾向于忽略小标题）
   const allow = cachedReadabilityAllow;
   const elements = Array.from(root.querySelectorAll<HTMLElement>(BLOCK_SELECTOR));
-  const blocks: ArticleBlock[] = [];
+
+  interface Candidate {
+    el: HTMLElement;
+    isHeading: boolean;
+    inReadable: boolean;
+  }
+  const candidates: Candidate[] = [];
   for (const el of elements) {
     if (el.classList.contains(TRANSLATION_CLASS)) continue;
-    const isArticleHeading =
-      el.tagName === 'H1' && el.closest(ARTICLE_ROOT_SELECTOR) !== null;
-    if (!isArticleHeading && el.closest(EXCLUDE_ANCESTOR_SELECTOR)) continue;
+    const isHeading = HEADING_TAGS.has(el.tagName);
+    const isInArticleScope = isHeading && el.closest(ARTICLE_ROOT_SELECTOR) !== null;
+    if (!isInArticleScope && el.closest(EXCLUDE_ANCESTOR_SELECTOR)) continue;
     const rawText = (el.textContent ?? '').trim();
-    if (rawText.length < MIN_BLOCK_LENGTH) continue;
-    if (linkTextRatio(el) > 0.5) continue;
-    if (!isArticleHeading && allow && !isInReadableArticle(el, allow)) continue;
-    const { text, restoreMap } = extractTextWithPreserves(el);
-    if (text.length < MIN_BLOCK_LENGTH) continue;
-    const id = el.getAttribute(BLOCK_ID_ATTR) ?? crypto.randomUUID();
-    el.setAttribute(BLOCK_ID_ATTR, id);
-    blocks.push({ id, element: el, text, restoreMap });
+    const minLen = isHeading ? MIN_HEADING_LENGTH : MIN_BLOCK_LENGTH;
+    if (rawText.length < minLen) continue;
+    if (!isHeading && linkTextRatio(el) > 0.5) continue;
+    const inReadable = !allow || isHeading || isInReadableArticle(el, allow);
+    candidates.push({ el, isHeading, inReadable });
+  }
+
+  // 阶段 2：决定 allowlist 是否启用
+  const nonHeading = candidates.filter((c) => !c.isHeading);
+  const nonHeadingInReadable = nonHeading.filter((c) => c.inReadable).length;
+  const coverage = nonHeading.length > 0 ? nonHeadingInReadable / nonHeading.length : 1;
+  const useAllowlist = allow !== null && coverage >= READABILITY_COVERAGE_FLOOR;
+  if (allow && !useAllowlist) {
+    console.log(
+      `[english-agent] Readability allowlist 覆盖率 ${(coverage * 100).toFixed(0)}% < ${READABILITY_COVERAGE_FLOOR * 100}%，丢弃 allowlist（${nonHeading.length} 候选）`,
+    );
+  }
+
+  const blocks: ArticleBlock[] = [];
+  for (const c of candidates) {
+    if (useAllowlist && !c.isHeading && !c.inReadable) continue;
+    const { text, restoreMap } = extractTextWithPreserves(c.el);
+    const minLen = c.isHeading ? MIN_HEADING_LENGTH : MIN_BLOCK_LENGTH;
+    if (text.length < minLen) continue;
+    const id = c.el.getAttribute(BLOCK_ID_ATTR) ?? crypto.randomUUID();
+    c.el.setAttribute(BLOCK_ID_ATTR, id);
+    blocks.push({ id, element: c.el, text, restoreMap });
   }
   return blocks;
 }
