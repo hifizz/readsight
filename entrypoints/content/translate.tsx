@@ -406,15 +406,29 @@ function extractPageBlocks(
  * 重试时若已有旧节点先 remove。
  *
  * 样式（v2）：去除背景 + 左边线，纯浅色文字，跟原文保持竖向呼吸但不抢视觉。
+ *
+ * 插入位置策略（v3）：
+ *   - 默认 anchor.afterend —— 译文 div 跟 anchor 同级，正常段落首选
+ *   - TD/TH/TR 在 table 上下文：div 不允许直接做 tr 的子节点，浏览器会
+ *     把它当匿名 cell 渲染到原 cell 右侧（HN bug）。改用 appendChild 塞进
+ *     anchor 内部，div 是 block-level 会自然换行；TR 例外，TR 不能直接
+ *     塞 div，只能 wrap 一层 tr+td colspan
  */
 function injectTranslation(
   anchor: HTMLElement,
   result: TranslationResult,
   onRetry: () => void,
 ): void {
-  // 清理旧节点（重试场景）
-  const oldNode = anchor.nextElementSibling;
-  if (oldNode?.classList.contains(TRANSLATION_CLASS)) oldNode.remove();
+  // 清理旧节点（重试场景）—— 兼容两种插入位置：
+  // 1) afterend 模式：旧节点是 anchor 的下一个兄弟
+  // 2) appendChild 模式：旧节点是 anchor 的最后一个子节点
+  // 3) TR 模式：旧节点是 anchor 下一个 sibling，且是包了 <td colspan>‍ 的 <tr>
+  const cleanupCandidates: Element[] = [];
+  if (anchor.nextElementSibling) cleanupCandidates.push(anchor.nextElementSibling);
+  if (anchor.lastElementChild) cleanupCandidates.push(anchor.lastElementChild);
+  for (const cand of cleanupCandidates) {
+    if (cand.classList.contains(TRANSLATION_CLASS)) cand.remove();
+  }
 
   const node = document.createElement('div');
   node.className = TRANSLATION_CLASS;
@@ -493,6 +507,37 @@ function injectTranslation(
     node.textContent = result.zh;
   }
 
+  insertTranslationNode(anchor, node);
+}
+
+/**
+ * 把译文节点按上下文放到合理位置：
+ *   - TD/TH 内部 appendChild —— div 是 block-level 会换行到 cell 底部
+ *   - TR 整行用 wrapper：新建一个 <tr class=trans><td colspan=N>node</td></tr>
+ *     插到 anchor 后面（table 的合法行结构）
+ *   - 其它情况 sibling.afterend（默认）
+ */
+function insertTranslationNode(anchor: HTMLElement, node: HTMLElement): void {
+  const tag = anchor.tagName;
+  if (tag === 'TD' || tag === 'TH') {
+    anchor.appendChild(node);
+    return;
+  }
+  if (tag === 'TR') {
+    const colCount = Math.max(
+      1,
+      anchor.querySelectorAll(':scope > td, :scope > th').length,
+    );
+    const wrapTr = document.createElement('tr');
+    wrapTr.className = TRANSLATION_CLASS;
+    wrapTr.setAttribute(BLOCK_ID_ATTR, node.getAttribute(BLOCK_ID_ATTR) ?? '');
+    const wrapTd = document.createElement('td');
+    wrapTd.colSpan = colCount;
+    wrapTd.appendChild(node);
+    wrapTr.appendChild(wrapTd);
+    anchor.insertAdjacentElement('afterend', wrapTr);
+    return;
+  }
   anchor.insertAdjacentElement('afterend', node);
 }
 
