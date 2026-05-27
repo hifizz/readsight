@@ -1151,7 +1151,9 @@ export function TranslateFab() {
       return;
     }
     setMenuOpen(false);
-    togglePageTranslation('article');
+    // FAB 主按钮默认走"翻译全页"——对现代 React 站点 / 复杂版面更稳；
+    // 想要严格的"正文"模式仍可从菜单显式选择。
+    togglePageTranslation('page');
   }
 
   function onClickMode(mode: TranslateMode) {
