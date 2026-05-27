@@ -314,6 +314,8 @@ function SelectionPill() {
   const [snapshot, setSnapshot] = useState<{
     ctx: SelectionContext;
     rect: DOMRect;  // 选区的视口坐标，用于定位 pill
+    /** 选区所在容器的真实底色判定。null = 采样不到（透明栈到底），交给 CSS prefers-color-scheme 兜底。 */
+    bgScheme: 'light' | 'dark' | null;
   } | null>(null);
   // popup 打开时 pill 隐藏 —— 用模块级 popup state 订阅，避免本地兄弟组件状态不同步
   const popupOpen = useIsPopupOpen();
@@ -345,7 +347,8 @@ function SelectionPill() {
           setSnapshot(null);
           return;
         }
-        setSnapshot({ ctx, rect: range.getBoundingClientRect() });
+        const bgScheme = detectBgScheme(block);
+        setSnapshot({ ctx, rect: range.getBoundingClientRect(), bgScheme });
       });
     }
     function onSelectionChange() {
@@ -377,6 +380,7 @@ function SelectionPill() {
       <button
         type="button"
         className="eag-pill"
+        data-bg={snapshot.bgScheme ?? undefined}
         // mousedown 默认会让浏览器清掉当前 selection；阻止它，click 仍能正常触发。
         onMouseDown={(e) => {
           e.preventDefault();
@@ -413,20 +417,33 @@ function SelectionPill() {
 
 /**
  * Pill 的 scoped CSS（lookup.jsx 视觉）。
- *   - 圆角 999px、黑底白字、双层投影
- *   - translateX(-50%) 把 left 作锚点中线，加 spring-in 入场动画
- *   - :hover 微亮 / :active 缩 .96，扣回 translateX 不丢
- *   - icon 用淡绿点缀（lookup.jsx hint 里同款 #0b8f5a 系），跟翻译 FAB 色系区分
+ *
+ * 配色自适应（两道）：
+ *   1. CSS @media prefers-color-scheme: dark —— 用户 OS 暗色 → pill 翻成白底黑字
+ *      （宿主页深色背景下保持可见）
+ *   2. JS 采样 data-bg —— pill 渲染时读宿主真实底色覆盖 OS 偏好
+ *      （e.g., OS 浅色但站点强制深色 / OS 深色但站点是白底新闻）
+ *
+ * 用 CSS 变量集中切色板，避免 hover / 投影到处复制。
  */
 const PILL_CSS = `
 .eag-pill {
+  /* 默认色板：深色 pill 适配浅色宿主页 */
+  --eag-pill-bg: #101012;
+  --eag-pill-fg: #fff;
+  --eag-pill-bg-hover: #26262a;
+  --eag-pill-shadow:
+    0 6px 20px rgba(16, 16, 18, .28),
+    0 1px 3px rgba(16, 16, 18, .4),
+    0 0 0 1px rgba(255, 255, 255, .06) inset;
+
   position: fixed;
   z-index: 2147483646;
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  background: #101012;
-  color: #fff;
+  background: var(--eag-pill-bg);
+  color: var(--eag-pill-fg);
   border: none;
   border-radius: 999px;
   padding: 10px 14px 10px 12px;
@@ -437,24 +454,86 @@ const PILL_CSS = `
   letter-spacing: .2px;
   white-space: nowrap;
   cursor: pointer;
-  box-shadow:
-    0 6px 20px rgba(16, 16, 18, .28),
-    0 1px 3px rgba(16, 16, 18, .4),
-    0 0 0 1px rgba(255, 255, 255, .06) inset;
+  box-shadow: var(--eag-pill-shadow);
   transform: translateX(-50%);
   transform-origin: 50% 120%;
   animation: eag-pill-in .16s cubic-bezier(.2, .8, .3, 1.1) both;
+  transition: background-color .15s ease, box-shadow .15s ease;
   -webkit-font-smoothing: antialiased;
 }
-.eag-pill:hover { background: #26262a; }
+.eag-pill:hover { background: var(--eag-pill-bg-hover); }
 .eag-pill:active { transform: translateX(-50%) scale(.96); }
 .eag-pill-icon { color: #6ddca0; flex: none; }
+
+/* 浅色 pill 色板（白底深字）—— 给"深色宿主背景"用 */
+@media (prefers-color-scheme: dark) {
+  .eag-pill:not([data-bg="light"]) {
+    --eag-pill-bg: #ffffff;
+    --eag-pill-fg: #101012;
+    --eag-pill-bg-hover: #f3f1eb;
+    --eag-pill-shadow:
+      0 6px 20px rgba(0, 0, 0, .45),
+      0 1px 3px rgba(0, 0, 0, .35),
+      0 0 0 1px rgba(0, 0, 0, .1) inset;
+  }
+}
+/* JS 采样优先级最高：宿主真实底色定调，跨过 OS 偏好 */
+.eag-pill[data-bg="dark"] {
+  --eag-pill-bg: #ffffff;
+  --eag-pill-fg: #101012;
+  --eag-pill-bg-hover: #f3f1eb;
+  --eag-pill-shadow:
+    0 6px 20px rgba(0, 0, 0, .45),
+    0 1px 3px rgba(0, 0, 0, .35),
+    0 0 0 1px rgba(0, 0, 0, .1) inset;
+}
+.eag-pill[data-bg="light"] {
+  --eag-pill-bg: #101012;
+  --eag-pill-fg: #fff;
+  --eag-pill-bg-hover: #26262a;
+  --eag-pill-shadow:
+    0 6px 20px rgba(16, 16, 18, .28),
+    0 1px 3px rgba(16, 16, 18, .4),
+    0 0 0 1px rgba(255, 255, 255, .06) inset;
+}
 
 @keyframes eag-pill-in {
   from { opacity: 0; transform: translateX(-50%) translateY(5px) scale(.92); }
   to   { opacity: 1; transform: translateX(-50%) translateY(0)   scale(1);   }
 }
 `;
+
+/**
+ * 沿祖先链找第一个不透明背景色，按相对亮度判定 light / dark。
+ * 透明栈到顶都没拿到 → 返 null，交给 prefers-color-scheme 兜底。
+ *
+ * 不做 gamma 修正，简化的加权平均阈值 0.5 已经覆盖绝大多数场景。
+ * 站点用 image / gradient 做 bg 拿到的 backgroundColor 通常是 "transparent"
+ * 或一个跟主视觉无关的 fallback —— 这种情况下我们更宁愿让 CSS 兜底。
+ */
+function detectBgScheme(start: Element | null): 'light' | 'dark' | null {
+  let cur: Element | null = start;
+  while (cur) {
+    const bg = getComputedStyle(cur).backgroundColor;
+    const lum = parseRgbLuminance(bg);
+    if (lum !== null) return lum < 0.5 ? 'dark' : 'light';
+    cur = cur.parentElement;
+  }
+  return null;
+}
+
+function parseRgbLuminance(rgb: string): number | null {
+  const m = rgb.match(
+    /^rgba?\(\s*(\d+)\s*,?\s*(\d+)\s*,?\s*(\d+)(?:\s*[,/]\s*([\d.]+))?\s*\)$/,
+  );
+  if (!m) return null;
+  const a = m[4] !== undefined ? parseFloat(m[4]) : 1;
+  if (a < 0.5) return null; // 透明 / 半透明都跳过，继续往上走
+  const r = parseInt(m[1], 10) / 255;
+  const g = parseInt(m[2], 10) / 255;
+  const b = parseInt(m[3], 10) / 255;
+  return 0.299 * r + 0.587 * g + 0.114 * b;
+}
 
 // 文章正文里"句子级"块的标签。PRD §8.2 命门一的"块"= 这里 closest() 命中的最近祖先。
 // 通用适配器，不挂任何站点白名单；如果某些站结构特别奇怪需要定制，再走 PRD §3.2 的站点适配器机制扩这个列表。
