@@ -29,6 +29,7 @@ import type {
   BackgroundMessage,
   LookupResult,
   SelectionContext,
+  TranslationResult,
 } from '@/lib/messaging';
 import { actionsForSelectionType } from '@/lib/action-tags';
 import { useDraggable } from '@/lib/use-draggable';
@@ -228,10 +229,51 @@ const DIALOG_CSS = `
 .eag-skel-line.eag-w-60 { width: 60%; }
 .eag-skel-line.eag-w-80 { width: 80%; }
 .eag-skel-line.eag-w-45 { width: 45%; }
+.eag-skel-line.eag-w-95 { width: 95%; }
+.eag-skel-line.eag-w-70 { width: 70%; }
+.eag-skel-line.eag-h-14 { height: 14px; }
 @keyframes eag-shimmer {
   from { background-position: 200% 0; }
   to   { background-position: -200% 0; }
 }
+
+/* inline 翻译块 —— 标题下方、actions 上方。serif 字体跟 ContextCard 呼应 */
+.eag-translate {
+  padding: 0 12px 10px;
+  font-family: var(--eag-read);
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--eag-ink-soft);
+  word-break: break-word;
+}
+.eag-translate-label {
+  font-family: var(--eag-ui);
+  font-size: 11px;
+  color: var(--eag-muted);
+  margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.eag-translate-err {
+  padding: 0 12px 10px;
+  font-size: 12px;
+  color: #b54a3a;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.eag-translate-retry {
+  border: 1px solid var(--eag-line);
+  background: #fff;
+  border-radius: 7px;
+  padding: 3px 9px;
+  font-size: 11.5px;
+  color: var(--eag-ink);
+  cursor: pointer;
+  font-family: var(--eag-ui);
+}
+.eag-translate-retry:hover { background: #faf8f3; }
 
 .eag-divider { height: 1px; background: var(--eag-line); margin: 0 12px; }
 
@@ -356,6 +398,80 @@ function useInlineLookup(ctx: SelectionContext | null): LookupState {
   return state;
 }
 
+// --- inline 翻译 state ---------------------------------------------------
+
+type TranslateState =
+  | { kind: 'idle' }
+  | { kind: 'loading' }
+  | { kind: 'ok'; zh: string }
+  | { kind: 'error'; message: string };
+
+/**
+ * 给定一段英文，调 /api/translate 单段翻译。命中 cache 几乎瞬时；
+ * 走 LLM 通常 1-3s（DeepSeek 主管道 → Zhipu / OpenRouter 兜底）。
+ *
+ * 跟 lookup 不同：这里是 click-triggered，不是 ctx 变就 fetch，所以暴露
+ * 命令式的 translate(text) 而不是 useEffect 内部触发。
+ */
+function useInlineTranslate(): {
+  state: TranslateState;
+  translate: (text: string) => void;
+  reset: () => void;
+} {
+  const [state, setState] = useState<TranslateState>({ kind: 'idle' });
+  const reqIdRef = useRef(0);
+
+  const translate = useCallback((text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      setState({ kind: 'error', message: '空选区，无法翻译' });
+      return;
+    }
+    const myId = ++reqIdRef.current;
+    setState({ kind: 'loading' });
+    // 单段批量调用；服务端会查缓存命中直接返回
+    fetch(`${BACKEND}/api/translate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ blocks: [{ id: '0', text: trimmed }] }),
+    })
+      .then((res) =>
+        res.ok ? res.json() : Promise.reject(new Error(`http ${res.status}`)),
+      )
+      .then((data: { results: TranslationResult[] }) => {
+        if (myId !== reqIdRef.current) return;
+        const r = data.results?.[0];
+        if (!r) {
+          setState({ kind: 'error', message: '翻译失败' });
+          return;
+        }
+        if (r.error) {
+          const msg =
+            r.error === 'content_filtered' ? '内容被审查过滤' : '翻译失败';
+          setState({ kind: 'error', message: msg });
+          return;
+        }
+        if (!r.zh) {
+          setState({ kind: 'error', message: '翻译为空' });
+          return;
+        }
+        setState({ kind: 'ok', zh: r.zh });
+      })
+      .catch((err) => {
+        if (myId !== reqIdRef.current) return;
+        console.warn('[english-agent] inline translate failed', err);
+        setState({ kind: 'error', message: '翻译失败' });
+      });
+  }, []);
+
+  const reset = useCallback(() => {
+    reqIdRef.current++;
+    setState({ kind: 'idle' });
+  }, []);
+
+  return { state, translate, reset };
+}
+
 // --- 主组件 --------------------------------------------------------------
 
 export function SelectionPopup() {
@@ -367,6 +483,11 @@ export function SelectionPopup() {
 
   // 词典 inline 数据
   const lookup = useInlineLookup(state.open ? state.ctx : null);
+
+  // inline 翻译（翻句 / 本句译法）
+  const translate = useInlineTranslate();
+  /** 上一次发起翻译的源文本，用于 retry */
+  const lastTranslateTextRef = useRef<string>('');
 
   // 拖拽：用 anchor 的预估位置初始化，挂载后 useLayoutEffect 用真实高度修正
   const initialLeft = state.anchor?.rect.left ?? 0;
@@ -386,7 +507,7 @@ export function SelectionPopup() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.open, state.anchor?.rect.top, state.anchor?.rect.left, state.anchor?.rect.bottom]);
 
-  // dict 区块从 loading 切到 ok 时高度会变 —— 重新对齐到锚点（避免遮选区）
+  // dict / translate 区块从 loading 切到 ok 时高度会变 —— 重新对齐到锚点
   useLayoutEffect(() => {
     if (!state.open || !state.anchor || !popupRef.current) return;
     if (lookup.kind === 'loading') return;
@@ -394,16 +515,31 @@ export function SelectionPopup() {
     const next = computePopupPosition(state.anchor, realHeight);
     drag.setPos({ x: next.left, y: next.top });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lookup.kind]);
+  }, [lookup.kind, translate.state.kind]);
 
-  // 切换 ctx 时停掉发音
+  // 切换 ctx 时停掉发音 + 清空 inline 翻译
   useEffect(() => {
     if (speakingTag) {
       window.speechSynthesis?.cancel();
       setSpeakingTag(null);
     }
+    translate.reset();
+    lastTranslateTextRef.current = '';
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.ctx?.id]);
+
+  // sentence / multi 选区 → 打开 popup 即自动翻译（命中 cache 几乎瞬时）
+  useEffect(() => {
+    const ctx = state.ctx;
+    if (!state.open || !ctx) return;
+    const t = ctx.selection.type;
+    if (t !== 'sentence' && t !== 'multi') return;
+    const text = ctx.selection.text;
+    lastTranslateTextRef.current = text;
+    translate.translate(text);
+    // 只在 ctx.id 变化时触发；translate 引用稳定（useCallback 空依赖），不进 deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.open, state.ctx?.id]);
 
   // 关闭时收尾
   useEffect(() => {
@@ -445,10 +581,18 @@ export function SelectionPopup() {
         toggleSpeak(ctx.selection.text, speakingTag, setSpeakingTag);
         return;
       }
+      // 本句译法（词/短语）—— popup 内 inline 翻译当前句子，不路由到 sidepanel。
+      // 句子/段落本身的翻译已在 useEffect 里自动触发，没有对应按钮。
+      if (tag === 'sentence-translate') {
+        const text = ctx.context.sentence;
+        lastTranslateTextRef.current = text;
+        translate.translate(text);
+        return;
+      }
       sendAsk({ ctx, actionTag: tag });
       closePopup();
     },
-    [state.ctx, speakingTag],
+    [state.ctx, speakingTag, translate],
   );
 
   const handleSpeakDirect = useCallback(() => {
@@ -473,6 +617,10 @@ export function SelectionPopup() {
   const actions = actionsForSelectionType(ctx.selection.type);
   const speaking = speakingTag === 'pronunciation';
   const isWord = ctx.selection.type === 'word';
+  /** 词/短语场景下，"本句译法"按钮的 active 态（sentence/multi 自动翻译，无按钮） */
+  const sentenceTranslateActive =
+    (isWord || ctx.selection.type === 'phrase') &&
+    translate.state.kind !== 'idle';
 
   return (
     <>
@@ -541,25 +689,64 @@ export function SelectionPopup() {
           </div>
         )}
 
+        {/* inline 翻译块：用户点 翻句 / 本句译法 时显示，复用 .eag-skel-line 骨架 */}
+        {translate.state.kind === 'loading' && (
+          <div className="eag-translate">
+            <div className="eag-translate-label">译文</div>
+            <div className="eag-skeleton" style={{ padding: 0 }}>
+              <div className="eag-skel-line eag-w-95 eag-h-14" />
+              <div className="eag-skel-line eag-w-80 eag-h-14" />
+              <div className="eag-skel-line eag-w-60 eag-h-14" />
+            </div>
+          </div>
+        )}
+        {translate.state.kind === 'ok' && (
+          <div className="eag-translate">
+            <div className="eag-translate-label">译文</div>
+            <div>{translate.state.zh}</div>
+          </div>
+        )}
+        {translate.state.kind === 'error' && (
+          <div className="eag-translate-err">
+            <span>{translate.state.message}</span>
+            <button
+              type="button"
+              className="eag-translate-retry"
+              onClick={() => {
+                if (lastTranslateTextRef.current) {
+                  translate.translate(lastTranslateTextRef.current);
+                }
+              }}
+            >
+              重试
+            </button>
+          </div>
+        )}
+
         <div className="eag-divider" />
         <div className="eag-sec-label">
           {isWord ? '结合本句继续 →' : '这段选区可以 →'}
         </div>
         <div className="eag-actions">
           {actions.map((a) => {
-            const active = a.tag === speakingTag;
             const isSpeak = a.tag === 'pronunciation';
+            const isTranslating =
+              a.tag === 'sentence-translate' && sentenceTranslateActive;
+            const active = a.tag === speakingTag || isTranslating;
             // word 类型且 dict 已展开时，发音按钮已在 IPA 行里，actions 不重复；
             // miss 态 dict 区块不显示发音按钮，所以 actions 仍然保留它作为 Tier 0
             if (isSpeak && isWord && lookup.kind === 'ok') return null;
+            const loading = isTranslating && translate.state.kind === 'loading';
             return (
               <button
                 key={a.tag}
                 type="button"
                 className={'eag-act' + (active ? ' eag-on' : '')}
                 onClick={() => handleAction(a.tag)}
+                disabled={loading}
                 aria-label={a.label}
                 aria-pressed={active}
+                aria-busy={loading}
               >
                 {isSpeak && <Volume2 size={11} />}
                 {a.label}

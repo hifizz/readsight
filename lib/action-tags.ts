@@ -22,8 +22,8 @@ export function actionsForSelectionType(t: SelectionType): ActionDef[] {
       { tag: 'usage', label: '用法搭配' },
     ];
   }
+  // 翻句不在这里 —— sentence/multi 打开 popup 自动翻译，不需要按钮触发
   return [
-    { tag: 'translate', label: '翻句' },
     { tag: 'grammar', label: '析语法' },
     { tag: 'rewrite', label: '改写地道说法' },
     { tag: 'hard-parts', label: '难点定位' },
