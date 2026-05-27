@@ -455,7 +455,7 @@ const IMMERSIVE_CSS = `
   /* 对齐 flow 译文样式（用户偏好） */
   font-weight: 400;
   font-size: 18px;
-  opacity: 0.7;
+  opacity: 0.5;
   line-height: 1.6;
 }
 
