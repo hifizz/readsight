@@ -493,7 +493,7 @@ const IMMERSIVE_CSS = `
   color: #1a1a1a;
   /* 蒙层纯白底，译文独立成行（不像 inline 模式有原文做上下文锚），
      opacity 太低会让眼睛抓不到。对齐 split 视觉 0.85 */
-  opacity: 0.7;
+  opacity: 0.5;
   line-height: 1.6;
   margin: 4px 0 22px;
 }
