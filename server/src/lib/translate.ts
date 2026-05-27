@@ -114,6 +114,29 @@ const TranslationsSchema = z.object({
   translations: z.array(z.string()),
 });
 
+/**
+ * 静态 system prompt —— 完全恒定的字符串，跟 batch 大小 / 内容无关。
+ * DeepSeek 走 OpenAI-compatible 协议时会对**前缀完全一致**的输入做自动 KV
+ * cache（cache-hit $0.0028/M vs miss $0.14/M = 50× 便宜）。原来的实现把
+ * `${texts.length}` 插值在指令中间，导致每个 batch size 不同时前缀都变，
+ * cache 永远 miss。这里抽成纯静态常量；动态部分（JSON 数组）放最后追加。
+ *
+ * "JSON" 字样必须保留 —— DeepSeek json_object 模式硬要求 prompt 含此关键词。
+ *
+ * 压缩说明（从 ~250 tokens → ~110 tokens）：
+ *   - 砍掉 "CRITICAL JSON SAFETY" 大段全角引号说明：实际 parsing 失败由
+ *     translateWithFallback 的 divide-and-conquer + GLM/OpenRouter 兜底链
+ *     catch，不需要在 prompt 里教 LLM 怎么转义。
+ *   - 合并冗余规则项；保留两条硬核：占位符 / 不动 URL+数字+代码。
+ */
+const TRANSLATE_SYSTEM_PROMPT =
+  'Translate English paragraphs to natural Simplified Chinese. ' +
+  'Keep brand names, acronyms, URLs, numbers, and code as-is. ' +
+  'Preserve any ⟪C<digits>⟫ token EXACTLY (code placeholder). ' +
+  'No commentary or numbering. ' +
+  'Return JSON: { "translations": [<N Chinese strings, parallel-indexed to input>] }\n\n' +
+  'Input:\n';
+
 async function callLLMBatch(
   texts: string[],
   model: LanguageModel,
@@ -122,28 +145,15 @@ async function callLLMBatch(
   const t0 = Date.now();
   let object: z.infer<typeof TranslationsSchema>;
   let finishReason: string | undefined;
+  let usage: unknown;
+  let providerMetadata: unknown;
   try {
     const result = await generateObject({
       model,
       schema: TranslationsSchema,
-      // 提示词留"JSON"字样 —— DeepSeek json_object 模式硬要求 prompt 含 "json"。
-      prompt: [
-        'Translate the English paragraphs below into natural, fluent Simplified Chinese.',
-        'Preserve tone, paragraph structure, and technical terms (keep brand names / acronyms as-is).',
-        'Do NOT translate code snippets, URLs, or numbers.',
-        '',
-        'Rules:',
-        '- Read like native Chinese writing, not literal word-for-word.',
-        '- Keep paragraph length proportionate to the original.',
-        '- No commentary, no prefixes, no numbering.',
-        '- CRITICAL: Preserve any token matching ⟪C<digits>⟫ (e.g. ⟪C1⟫, ⟪C2⟫) EXACTLY as-is — these are code placeholders.',
-        '- CRITICAL JSON SAFETY: inside each translated string, do NOT use full-width Chinese quotation marks `“` `”` `「` `」` as delimiters for inline quoted phrases. If the English source has inline quotes like "hello", render them in Chinese without quotes, or paraphrase. Reason: full-width quotes have caused upstream parsers to mis-detect string boundaries. ASCII double-quotes inside a string must be escaped as \\".',
-        '',
-        `Input (${texts.length} English paragraphs, parallel-indexed):`,
-        JSON.stringify(texts),
-        '',
-        `Return a JSON object: { "translations": [<${texts.length} Chinese strings>] }`,
-      ].join('\n'),
+      // 前缀 = 完全恒定的 system prompt（cache hit）；后缀 = 这次 batch 的 JSON
+      // 数组（cache miss，但只是真正的内容部分）。
+      prompt: TRANSLATE_SYSTEM_PROMPT + JSON.stringify(texts),
       // V4-flash 单次最高输出 384K tokens；我们 batch=12，正常 3-5K 就够，
       // 但段落偏长 / 带占位符回填会膨胀。给到 32K 彻底排除截断为变量
       // （截断会抛 NoObjectGeneratedError，触发整批兜底重试）。
@@ -151,13 +161,26 @@ async function callLLMBatch(
     });
     object = result.object;
     finishReason = result.finishReason;
+    usage = result.usage;
+    providerMetadata = result.providerMetadata;
   } catch (err) {
     console.warn(`[translate] ${modelLabel} generateObject threw:`, err);
     throw err; // 让 translateWithFallback 兜底
   }
   const elapsed = Date.now() - t0;
+  // Usage 日志：拿 input/output token 和 DeepSeek 的 prompt_cache_hit_tokens
+  // （在 providerMetadata.openai-compatible.providerOptions 或类似路径下）
+  // 来确认 prompt cache 真的命中了。AI SDK 不同版本字段名略有差异，宽松解构。
+  const u = usage as { inputTokens?: number; outputTokens?: number; totalTokens?: number } | undefined;
+  const pm = providerMetadata as Record<string, Record<string, unknown>> | undefined;
+  const ds = pm?.['deepseek'] ?? pm?.['openai-compatible'] ?? pm?.['openai'];
+  const cacheHit = (ds as { promptCacheHitTokens?: number; prompt_cache_hit_tokens?: number } | undefined)
+    ?.promptCacheHitTokens ?? (ds as { prompt_cache_hit_tokens?: number } | undefined)?.prompt_cache_hit_tokens;
   console.log(
-    `[translate] ${modelLabel} batch(${texts.length}) → ${elapsed}ms, finish=${finishReason}`,
+    `[translate] ${modelLabel} batch(${texts.length}) → ${elapsed}ms` +
+      `, in=${u?.inputTokens ?? '?'} out=${u?.outputTokens ?? '?'}` +
+      (cacheHit !== undefined ? ` cacheHit=${cacheHit}` : '') +
+      `, finish=${finishReason}`,
   );
   const arr = object.translations;
   if (arr.length !== texts.length) {
