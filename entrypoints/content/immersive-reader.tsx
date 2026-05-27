@@ -13,6 +13,7 @@
  * 跨不过去；用 window 自定义事件 'eag:open-reader' 做信号桥，detail.layout 选模式。
  */
 import { Fragment, createElement, useEffect, useState } from 'react';
+import { AlignJustify, Columns2 } from 'lucide-react';
 import {
   type ArticleBlock,
   extractArticleBlocks,
@@ -160,6 +161,32 @@ export function ImmersiveReader() {
             <div className="eag-imm-title" title={title}>
               {title || (layout === 'flow' ? '沉浸阅读' : '对照阅读')}
             </div>
+            <div className="eag-imm-layout-switch" role="group" aria-label="切换阅读布局">
+              <button
+                type="button"
+                className={
+                  'eag-imm-layout-btn' + (layout === 'flow' ? ' is-active' : '')
+                }
+                onClick={() => setLayout('flow')}
+                aria-label="沉浸阅读（单列）"
+                aria-pressed={layout === 'flow'}
+                title="沉浸阅读"
+              >
+                <AlignJustify size={14} />
+              </button>
+              <button
+                type="button"
+                className={
+                  'eag-imm-layout-btn' + (layout === 'split' ? ' is-active' : '')
+                }
+                onClick={() => setLayout('split')}
+                aria-label="对照阅读（双列）"
+                aria-pressed={layout === 'split'}
+                title="对照阅读"
+              >
+                <Columns2 size={14} />
+              </button>
+            </div>
             <button
               type="button"
               className="eag-imm-close"
@@ -175,6 +202,15 @@ export function ImmersiveReader() {
             ) : (
               <FlowView blocks={blocks} statuses={statuses} />
             )}
+            {/* 文末关闭提示 —— 滚到底自然遇到，小而轻不抢戏 */}
+            <button
+              type="button"
+              className="eag-imm-bottom-close"
+              onClick={handleClose}
+              aria-label="关闭"
+            >
+              — 关闭 —
+            </button>
           </div>
         </div>
       </div>
@@ -310,6 +346,36 @@ const IMMERSIVE_CSS = `
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* 布局切换器 —— 两个 icon button 拼成胶囊，当前模式高亮 */
+.eag-imm-layout-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  background: rgba(0, 0, 0, 0.04);
+  border-radius: 7px;
+  padding: 2px;
+}
+.eag-imm-layout-btn {
+  width: 28px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: #888;
+  cursor: pointer;
+  border-radius: 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: background .12s, color .12s;
+}
+.eag-imm-layout-btn:hover { color: #333; }
+.eag-imm-layout-btn.is-active {
+  background: #fff;
+  color: #111;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.08), 0 0 0 1px rgba(0,0,0,0.04);
+}
+
 .eag-imm-close {
   width: 28px;
   height: 28px;
@@ -453,6 +519,26 @@ const IMMERSIVE_CSS = `
 @keyframes eag-imm-shimmer {
   0%   { background-position: 100% 0; }
   100% { background-position: -100% 0; }
+}
+
+/* 文末"关闭"提示 —— 滚到底自然遇到，小且浅不抢戏 */
+.eag-imm-bottom-close {
+  display: block;
+  margin: 48px auto 24px;
+  padding: 8px 16px;
+  background: transparent;
+  border: none;
+  color: #999;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 12px;
+  letter-spacing: 1px;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: color .12s, background .12s;
+}
+.eag-imm-bottom-close:hover {
+  color: #444;
+  background: rgba(0, 0, 0, 0.04);
 }
 
 /* "未识别到正文" toast */
