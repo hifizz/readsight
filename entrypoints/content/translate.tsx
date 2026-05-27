@@ -772,9 +772,11 @@ function getModuleState(): ModuleState {
  * 外部统一入口：FAB 点击、右键菜单、快捷键都调这个函数。
  * idle ↔ active 切换；active 时点击 = 撤销。
  *
- * @param mode 'article' (默认，正文 + Readability 过滤) 或 'page' (整页含 nav/sidebar)
+ * @param mode 'page' (默认，整页) 或 'article' (正文 + Readability 严格过滤)
+ *   —— 默认从 'article' 改到 'page'：现代 React 站点（github / Linear / Notion）
+ *   article 模式 0 块静默失败的概率太高，'page' 更稳。
  */
-export function togglePageTranslation(mode: TranslateMode = 'article'): void {
+export function togglePageTranslation(mode: TranslateMode = 'page'): void {
   if (moduleState.status === 'active') {
     // 必须先停 MutationObserver：undoAllTranslations 会移除大量翻译节点，
     // 这些 childList 变化要是被 observer 捕获，rescan 会在 stop 后空跑。
@@ -1176,12 +1178,13 @@ export function TranslateFab() {
    * mode 选取的 fallback 链（"你现在怎么看，以后就怎么看"）：
    *   1. 本会话用户最后一次手动选的 mode（lastUsedMode）
    *   2. 已存在规则里记录的 mode
-   *   3. 'article'（默认）
+   *   3. 'page'（默认）—— 跟 FAB 主按钮对齐；'article' 在现代 React 站点
+   *      （github / Linear / Notion 等）会因严格过滤而 0 块静默失败
    */
   function onChangeRule(next: 'always' | 'session' | 'never') {
     // 闭包捕获的 rule 类型不被 early return narrowing 影响，显式收窄一次
     const ruleObj = rule !== 'loading' ? rule : null;
-    const mode: TranslateMode = lastUsedMode ?? ruleObj?.mode ?? 'article';
+    const mode: TranslateMode = lastUsedMode ?? ruleObj?.mode ?? 'page';
     if (next === 'always') {
       void setDomainRule(hostname, { auto: 'always', mode });
     } else if (next === 'never') {
@@ -1199,7 +1202,7 @@ export function TranslateFab() {
 
   // "总是自动翻译"如果被点，会以哪种 mode 落地（用于 UI 提示用户）
   // 此时 rule 已经被前面的 early return 收窄为 DomainRule | null
-  const effectiveMode: TranslateMode = lastUsedMode ?? rule?.mode ?? 'article';
+  const effectiveMode: TranslateMode = lastUsedMode ?? rule?.mode ?? 'page';
 
   // 只在"规则=always 且检测出同语言"时给 hint —— 用户处于"我以为它会翻但没翻"
   // 的认知缺口，这时候需要解释；其它情况静默。
