@@ -136,7 +136,7 @@ function linkTextRatio(block: HTMLElement): number {
   return inLinks / total;
 }
 
-interface ArticleBlock {
+export interface ArticleBlock {
   id: string;
   element: HTMLElement;
   /** 已注入占位符的待翻译文本（代码标识符被替换成 ⟪C1⟫ ⟪C2⟫ 等） */
@@ -187,7 +187,7 @@ function extractTextWithPreserves(block: HTMLElement): {
 }
 
 /** 翻译完成后把占位符 ⟪C1⟫ 替换回原代码文本 */
-function restorePreserves(translated: string, restoreMap: Map<string, string>): string {
+export function restorePreserves(translated: string, restoreMap: Map<string, string>): string {
   let out = translated;
   for (const [ph, orig] of restoreMap.entries()) {
     out = out.split(ph).join(orig);
@@ -234,7 +234,7 @@ let cachedReadabilityAllow: Set<string> | null = null;
  *   用 Readability 过滤新块，只要在 cachedArticleRoot 内 + 不在 EXCLUDE_ANCESTOR
  *   就算 article body）；false = 用户点击触发的初始扫，严格路径。
  */
-function extractArticleBlocks(
+export function extractArticleBlocks(
   mode: TranslateMode = 'article',
   isRescan = false,
 ): ArticleBlock[] {
@@ -464,7 +464,7 @@ export function undoAllTranslations(): void {
 /**
  * 给 background 发一批 blocks，带超时；超时按 Error 抛出由调用方挂 retry。
  */
-async function translateBatchViaBackground(
+export async function translateBatchViaBackground(
   blocks: Array<{ id: string; text: string }>,
   timeoutMs = BATCH_TIMEOUT_MS,
 ): Promise<TranslationResult[]> {
@@ -1533,6 +1533,24 @@ function ModeMenu({
               <div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>{item.desc}</div>
             </button>
           ))}
+          <button
+            type="button"
+            onClick={() => {
+              // 沉浸式对照阅读走独立 overlay，不复用 inline 注入路径。
+              // 用 window 事件跨 shadow root 通讯：FAB 和 ImmersiveReader 各自挂在
+              // 独立 shadow root 里，模块级状态 / React Context 都跨不过去。
+              window.dispatchEvent(new CustomEvent('eag:open-immersive'));
+              onCloseMenu();
+            }}
+            style={menuItemStyle}
+            onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(0,0,0,0.04)')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+          >
+            <div style={{ fontWeight: 500 }}>对照阅读</div>
+            <div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>
+              左右分屏沉浸式精读
+            </div>
+          </button>
           <div style={dividerStyle} />
         </>
       )}

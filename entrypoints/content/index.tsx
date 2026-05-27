@@ -17,6 +17,7 @@ import type { SelectionContext, SelectionType, BackgroundMessage } from '@/lib/m
 import { resolveLemma } from '@/lib/lemmatize';
 import { Sparkles } from 'lucide-react';
 import { TranslateFab, togglePageTranslation, onTranslateStateChange } from './translate';
+import { ImmersiveReader } from './immersive-reader';
 import { SelectionPopup, openPopup, useIsPopupOpen } from './popup';
 import { clearDomainRule } from '@/lib/domain-rules';
 
@@ -83,6 +84,26 @@ export default defineContentScript({
       onRemove: (root) => root?.unmount(),
     });
     fabUi.mount();
+
+    // 沉浸式对照阅读（FAB 菜单"对照阅读"打开）—— 独立 Shadow DOM，蒙层全屏
+    // 时不影响 FAB 状态机。监听 window 'eag:open-immersive' 事件触发显示。
+    const immersiveUi = await createShadowRootUi(ctx, {
+      name: 'english-agent-immersive',
+      position: 'overlay',
+      // alignment 对 fixed 定位的蒙层不重要 —— host 元素只是挂载点，内部用 position:fixed
+      alignment: 'top-left',
+      zIndex: 2147483647,
+      anchor: 'body',
+      onMount: (container) => {
+        const host = document.createElement('div');
+        container.append(host);
+        const root = ReactDOM.createRoot(host);
+        root.render(<ImmersiveReader />);
+        return root;
+      },
+      onRemove: (root) => root?.unmount(),
+    });
+    immersiveUi.mount();
 
     // 把翻译状态变化通知 background，让右键菜单标题动态更新
     onTranslateStateChange((status) => {
