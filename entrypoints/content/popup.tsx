@@ -22,7 +22,7 @@ import {
   useState,
   useSyncExternalStore,
 } from 'react';
-import { X, MessageSquare, Volume2, Sparkles } from 'lucide-react';
+import { X, MessageSquare, Volume2 } from 'lucide-react';
 import type {
   ActionTag,
   AskWithSelectionPayload,
@@ -32,6 +32,7 @@ import type {
 } from '@/lib/messaging';
 import { actionsForSelectionType } from '@/lib/action-tags';
 import { useDraggable } from '@/lib/use-draggable';
+import { DictCard, DICT_CARD_CSS } from '@/components/dict-card';
 
 const BACKEND = import.meta.env.WXT_BACKEND_URL ?? 'http://localhost:4010';
 
@@ -117,8 +118,9 @@ const DIALOG_CSS = `
   --eag-sel-strong: #a9c6ff;
   --eag-sand: #9a7330;
   --eag-sand-bg: #f6efe1;
-  --eag-ui: 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', system-ui, -apple-system, sans-serif;
-  --eag-read: 'Songti SC', Georgia, 'Times New Roman', serif;
+  /* 字体跟系统默认 —— system-ui 各平台自带最佳 sans，Georgia 是桌面级 serif */
+  --eag-ui: system-ui, sans-serif;
+  --eag-read: Georgia, serif;
 
   width: ${POPUP_WIDTH}px;
   max-width: calc(100vw - 24px);
@@ -146,18 +148,6 @@ const DIALOG_CSS = `
   cursor: move;
   user-select: none;
 }
-.eag-badge {
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: .1em;
-  color: var(--eag-muted);
-  background: #f1efe9;
-  border: 1px solid var(--eag-line);
-  padding: 3px 7px;
-  border-radius: 6px;
-  text-transform: uppercase;
-  flex: none;
-}
 .eag-title {
   flex: 1;
   min-width: 0;
@@ -166,9 +156,22 @@ const DIALOG_CSS = `
   font-weight: 600;
   letter-spacing: -.01em;
   color: var(--eag-ink);
-  white-space: nowrap;
+  line-height: 1.3;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* word / phrase：单行 + 省略 —— 不允许换行，超长(antidisestablishmentarianism)截断 */
+  white-space: nowrap;
+}
+/* sentence / multi：最多 2 行 + 省略 —— line-clamp 把超出的部分省略掉，不再压成一行 */
+.eag-title[data-selection-type="sentence"],
+.eag-title[data-selection-type="multi"] {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  word-break: break-word;
+  font-size: 15px;
 }
 .eag-icon-btn {
   flex: none;
@@ -186,69 +189,10 @@ const DIALOG_CSS = `
 }
 .eag-icon-btn:hover { color: var(--eag-ink); background: #f3f1eb; }
 
+/* DictCard 内部的所有 .eag-ipa-row / .eag-defs / .eag-tags / .eag-relation / .eag-exchange
+ * 已经迁到 components/dict-card.tsx 的 DICT_CARD_CSS。这里只保留 popup 自己的 chrome。 */
+
 .eag-dict { padding: 0 12px 12px; }
-.eag-ipa-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 10px;
-  flex-wrap: wrap;
-}
-.eag-ipa { display: inline-flex; align-items: baseline; gap: 5px; font-size: 13px; color: var(--eag-ink-soft); }
-.eag-ipa em {
-  font-style: normal;
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: .06em;
-  color: var(--eag-faint);
-  text-transform: uppercase;
-}
-.eag-speak {
-  display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 9px;
-  border: 1px solid var(--eag-line);
-  background: #faf8f3;
-  color: var(--eag-ink);
-  cursor: pointer;
-  position: relative;
-  flex: none;
-  padding: 0;
-  transition: border-color .12s, background .12s;
-}
-.eag-speak:hover { border-color: var(--eag-line-2); background: #f4f1ea; }
-.eag-speak.eag-on::after {
-  content: "";
-  position: absolute;
-  inset: -4px;
-  border-radius: 12px;
-  border: 2px solid var(--eag-sel-strong);
-  animation: eag-ring 1s ease-out infinite;
-  pointer-events: none;
-}
-@keyframes eag-ring {
-  0%   { opacity: .9; transform: scale(.85); }
-  100% { opacity: 0;  transform: scale(1.25); }
-}
-
-.eag-defs { font-size: 13px; line-height: 1.6; color: var(--eag-ink-soft); }
-.eag-defs .eag-def-row { margin-bottom: 3px; }
-.eag-defs .eag-pos { color: var(--eag-muted); font-style: italic; margin-right: 6px; }
-.eag-defs .eag-en { color: var(--eag-ink); font-family: var(--eag-read); }
-.eag-defs .eag-cn { color: var(--eag-ink-soft); }
-
-.eag-tags { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
-.eag-tag {
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: .02em;
-  color: var(--eag-sand);
-  background: var(--eag-sand-bg);
-  border-radius: 6px;
-  padding: 3px 7px;
-}
 
 .eag-miss {
   padding: 2px 12px 12px;
@@ -364,13 +308,6 @@ const DIALOG_CSS = `
 .eag-send:hover { background: #26262a; }
 `;
 
-const TYPE_BADGE: Record<SelectionContext['selection']['type'], string> = {
-  word: 'WORD',
-  phrase: 'PHRASE',
-  sentence: 'SENTENCE',
-  multi: 'PARAGRAPH',
-};
-
 // --- 内联 lookup state ---------------------------------------------------
 
 type LookupState =
@@ -394,9 +331,8 @@ function useInlineLookup(ctx: SelectionContext | null): LookupState {
     }
     let cancelled = false;
     setState({ kind: 'loading' });
-    // 用 GET 避免 CORS 预检 —— content-script 的 fetch 走页面 origin，POST + json
-    // 会触发 preflight OPTIONS。/api/lookup GET 形态正好是"纯查词、不落 encounter"，
-    // 跟 popup 预览语义吻合：真正的 lookup 事件由 sidepanel 在用户决定深入时落库。
+    // GET 避免 CORS 预检；server 端 lookup 链 cache → ECDICT → free-dict → LLM，
+    // ECDICT 命中时响应里会带 extras（tag / collins / exchange...）
     const q = encodeURIComponent(ctx.selection.text);
     fetch(`${BACKEND}/api/lookup?word=${q}`)
       .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`http ${res.status}`))))
@@ -541,6 +477,7 @@ export function SelectionPopup() {
   return (
     <>
       <style>{DIALOG_CSS}</style>
+      <style>{DICT_CARD_CSS}</style>
       <div
         ref={popupRef}
         className="eag-dialog"
@@ -556,19 +493,21 @@ export function SelectionPopup() {
           className="eag-head"
           onMouseDown={drag.onMouseDown}
         >
-          <span className="eag-badge">{TYPE_BADGE[ctx.selection.type]}</span>
-          <span className="eag-title" title={ctx.selection.text}>{ctx.selection.text}</span>
+          <span
+            className="eag-title"
+            data-selection-type={ctx.selection.type}
+            title={ctx.selection.text}
+          >
+            {ctx.selection.text}
+          </span>
           <button
             type="button"
             className="eag-icon-btn"
+            // close button 不是 drag handle —— mousedown 阻止冒泡，避免父级
+            // drag.onMouseDown 把这次点击算作可能的拖拽起点（残留 wasDragged
+            // 会让 click 被 consumeDragClick 误吞掉）。
             onMouseDown={(e) => e.stopPropagation()}
-            onClick={(e) => {
-              if (drag.consumeDragClick()) {
-                e.preventDefault();
-                return;
-              }
-              closePopup();
-            }}
+            onClick={() => closePopup()}
             aria-label="Close"
           >
             <X size={14} />
@@ -585,26 +524,20 @@ export function SelectionPopup() {
         )}
 
         {isWord && lookup.kind === 'ok' && (
-          <DictBlock
-            data={lookup.data}
-            speaking={speaking}
-            onSpeak={handleSpeakDirect}
-          />
+          <div className="eag-dict">
+            <DictCard
+              mode="compact"
+              data={lookup.data}
+              speaking={speaking}
+              onSpeak={handleSpeakDirect}
+            />
+          </div>
         )}
 
         {isWord && lookup.kind === 'miss' && (
           <div className="eag-miss">
             <span className="eag-est">词典未命中</span>
             <span>音标 / 释义将走 LLM 兜底。</span>
-            <button
-              type="button"
-              className={'eag-speak' + (speaking ? ' eag-on' : '')}
-              onClick={handleSpeakDirect}
-              aria-label="发音"
-              style={{ marginLeft: 'auto' }}
-            >
-              <Volume2 size={14} />
-            </button>
           </div>
         )}
 
@@ -616,8 +549,9 @@ export function SelectionPopup() {
           {actions.map((a) => {
             const active = a.tag === speakingTag;
             const isSpeak = a.tag === 'pronunciation';
-            // word 类型若已经把发音放进 dict / miss 区块里了，actions 里就别重复
-            if (isSpeak && isWord && (lookup.kind === 'ok' || lookup.kind === 'miss')) return null;
+            // word 类型且 dict 已展开时，发音按钮已在 IPA 行里，actions 不重复；
+            // miss 态 dict 区块不显示发音按钮，所以 actions 仍然保留它作为 Tier 0
+            if (isSpeak && isWord && lookup.kind === 'ok') return null;
             return (
               <button
                 key={a.tag}
@@ -637,65 +571,6 @@ export function SelectionPopup() {
         <Footer onDeepChat={handleDeepChat} />
       </div>
     </>
-  );
-}
-
-function DictBlock({
-  data,
-  speaking,
-  onSpeak,
-}: {
-  data: LookupResult;
-  speaking: boolean;
-  onSpeak: () => void;
-}) {
-  const us = data.ipa?.us;
-  const uk = data.ipa?.uk;
-  // 取第一个 pos 的前 2 个定义 —— popup 是轻量入口，不展开全部释义
-  const firstPos = data.partsOfSpeech[0];
-  const defs = firstPos?.definitions.slice(0, 2) ?? [];
-  return (
-    <div className="eag-dict">
-      {(us || uk) && (
-        <div className="eag-ipa-row">
-          {us && (
-            <span className="eag-ipa">
-              <em>US</em>
-              {us}
-            </span>
-          )}
-          {uk && (
-            <span className="eag-ipa">
-              <em>UK</em>
-              {uk}
-            </span>
-          )}
-          <button
-            type="button"
-            className={'eag-speak' + (speaking ? ' eag-on' : '')}
-            onClick={onSpeak}
-            aria-label="发音"
-            aria-pressed={speaking}
-            style={{ marginLeft: 'auto' }}
-          >
-            <Volume2 size={14} />
-          </button>
-        </div>
-      )}
-      <div className="eag-defs">
-        {defs.map((d, i) => (
-          <div key={i} className="eag-def-row">
-            {i === 0 && firstPos && <span className="eag-pos">{firstPos.pos}</span>}
-            {d.cn ? <span className="eag-cn">{d.cn}</span> : <span className="eag-en">{d.definition}</span>}
-          </div>
-        ))}
-      </div>
-      {data.estimated && (
-        <div className="eag-tags">
-          <span className="eag-tag">估计</span>
-        </div>
-      )}
-    </div>
   );
 }
 

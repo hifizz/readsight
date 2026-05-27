@@ -18,6 +18,7 @@ import { db } from '@/db/client';
 import { dictionaryEntries } from '@/db/schema';
 import { minimax, DEFAULT_MODEL_ID } from './minimax';
 import { zhipuFlash, isZhipuConfigured } from './zhipu';
+import { ecdictLookup, deriveRelationship, type EcdictExtras } from './ecdict';
 
 /** 与扩展端 lib/messaging.ts 的 LookupResult 保持同步 —— 故意重复定义以避免跨包导入。 */
 export interface LookupResult {
@@ -36,8 +37,10 @@ export interface LookupResult {
     // cn: 中文释义；D 方案下 Free Dictionary 命中后由 MiniMax 批量翻译填入并一起入缓存。
     definitions: Array<{ definition: string; cn?: string; example?: string }>;
   }>;
-  source: 'cache' | 'free-dictionary' | 'llm';
+  source: 'cache' | 'ecdict' | 'free-dictionary' | 'llm';
   estimated?: boolean;
+  /** ECDICT 来源时附带：CET/TOEFL/GRE tag、Collins 星、BNC 频率、形态变化等 */
+  extras?: EcdictExtras;
 }
 
 /** 从已构造好的 LookupResult 推导 itemKey（cache hit / fresh fetch 都走这条）。 */
@@ -373,19 +376,73 @@ export async function lookupWord(input: string): Promise<LookupResult> {
   if (cached.length > 0) {
     const payload = cached[0].payload as Partial<LookupResult>;
     const partsOfSpeech = payload.partsOfSpeech ?? [];
+    // ECDICT 接入后老缓存可能没 cn / extras；如果缓存条目"质量较差"
+    // （所有 def 都没 cn 字段），重查一次 ECDICT，命中就走 ecdict 路径覆盖
+    const hasChineseDef = partsOfSpeech.some((p) =>
+      p.definitions.some((d) => d.cn && d.cn.trim()),
+    );
+    if (hasChineseDef) {
+      // 缓存里的 lemma 才是 canonical（屈折形不会单独成行）。当前查询的 surfaceForm
+      // 跟 lemma 不同时，用 lemma.extras.exchange 反查派生 relationship 标记。
+      const cachedLemma = cached[0].lemma;
+      const extras = payload.extras
+        ? {
+            ...payload.extras,
+            relationship: deriveRelationship(surfaceForm, cachedLemma, payload.extras.exchange),
+          }
+        : undefined;
+      return {
+        ipa: payload.ipa,
+        audioUrl: payload.audioUrl,
+        partsOfSpeech,
+        estimated: payload.estimated,
+        extras,
+        surfaceForm,
+        lemma: cachedLemma,
+        itemKey: payload.itemKey ?? deriveItemKey(cachedLemma, partsOfSpeech),
+        source: 'cache',
+      };
+    }
+    // 老缓存（无 cn）—— 故意 fallthrough，让 ECDICT 给一份带中文的覆盖写
+  }
+
+  // 2) ECDICT —— 同步 sqlite，< 1ms，覆盖 770k 词，自带中文 + 难度标签 + 形态表。
+  //    屈折形（brought / permissions / ...）会被自动重定向到原形（bring / permission），
+  //    取原形的完整数据；relationship 由 deriveRelationship 算出。
+  const ecd = ecdictLookup(surfaceForm, lemmaWord);
+  if (ecd && ecd.partsOfSpeech.length > 0) {
+    const canonicalLemma = ecd.canonicalLemma;
+    // cache 写：去掉 relationship（它是查询态的，按 surfaceForm 不同而变）
+    const cacheableExtras: EcdictExtras = { ...ecd.extras };
+    delete cacheableExtras.relationship;
+    const cacheable: LookupResult = {
+      ipa: ecd.ipa,
+      partsOfSpeech: ecd.partsOfSpeech,
+      source: 'ecdict',
+      extras: cacheableExtras,
+      surfaceForm: canonicalLemma, // 占位；读取时被现场 surfaceForm 覆盖
+      lemma: canonicalLemma,
+      itemKey: deriveItemKey(canonicalLemma, ecd.partsOfSpeech),
+    };
+    await db
+      .insert(dictionaryEntries)
+      .values({ lemma: canonicalLemma, payload: cacheable, source: 'ecdict' })
+      .onConflictDoUpdate({
+        target: dictionaryEntries.lemma,
+        set: { payload: cacheable, source: 'ecdict' },
+      });
+    // 当前响应：补 relationship，并把 surfaceForm 换回真实查询值
     return {
-      ipa: payload.ipa,
-      audioUrl: payload.audioUrl,
-      partsOfSpeech,
-      estimated: payload.estimated,
+      ...cacheable,
       surfaceForm,
-      lemma: lemmaWord,
-      itemKey: payload.itemKey ?? deriveItemKey(lemmaWord, partsOfSpeech),
-      source: 'cache',
+      extras: {
+        ...cacheableExtras,
+        relationship: deriveRelationship(surfaceForm, canonicalLemma, cacheableExtras.exchange),
+      },
     };
   }
 
-  // 2) Free Dictionary（D 方案：命中后让 MiniMax 把英文 definition 批量翻译成中文短义，
+  // 3) Free Dictionary（D 方案：命中后让 MiniMax 把英文 definition 批量翻译成中文短义，
   //    一并写进缓存。翻译失败不影响主流程，cn 字段缺失即可。）
   const dict = await fetchFreeDictionary(lemmaWord);
   if (dict && dict.partsOfSpeech.length > 0) {

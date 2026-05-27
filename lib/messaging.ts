@@ -92,6 +92,27 @@ export interface TranslationResult {
  * - partsOfSpeech: 一个词可能有多种词性（"run" 是动词也是名词），每种带定义 + 例句
  * - source / estimated: 来源透明，LLM 兜底时 estimated=true（PRD §6.2）
  */
+/** 屈折形 → 原形的关系标记（动态，不进 cache） */
+export interface EcdictRelationship {
+  /** 用户实际查的词（屈折形）—— 如 "brought" */
+  surfaceForm: string;
+  /** 真正的原形 —— 如 "bring" */
+  lemma: string;
+  /** "p" / "d" / "dp" / "i" / "3" / "s" / "r" / "t" —— 在原形 exchange 里反查得到 */
+  kindCode: string;
+}
+
+/** ECDICT 附加字段 —— source==='ecdict' 时一并下发，前端 chip / 变形表用 */
+export interface EcdictExtras {
+  tag?: string;        // "cet6 toefl gre" 空格分隔
+  collins?: number;    // 1-5 星
+  oxford?: number;     // 1 = Oxford 3000
+  bnc?: number;        // BNC 频率排名
+  frq?: number;        // 当代英语频率排名
+  exchange?: string;   // 原形的完整形态变化 "p:brought/d:brought/i:bringing/3:brings"
+  relationship?: EcdictRelationship;  // 查的是屈折形时填这里
+}
+
 export interface LookupResult {
   surfaceForm: string;
   lemma: string;
@@ -105,6 +126,8 @@ export interface LookupResult {
     // 老缓存条目可能没这个字段，前端容忍 undefined。
     definitions: Array<{ definition: string; cn?: string; example?: string }>;
   }>;
-  source: 'cache' | 'free-dictionary' | 'llm';
+  source: 'cache' | 'ecdict' | 'free-dictionary' | 'llm';
   estimated?: boolean;
+  /** ECDICT 来源时附带 */
+  extras?: EcdictExtras;
 }

@@ -408,11 +408,11 @@ const PILL_CSS = `
   color: #fff;
   border: none;
   border-radius: 999px;
-  padding: 8px 14px 8px 12px;
-  font-family: 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', system-ui, -apple-system, sans-serif;
+  padding: 10px 14px 10px 12px;
+  font-family: system-ui, sans-serif;
   font-size: 13px;
   font-weight: 600;
-  line-height: 1;
+  line-height: 1.1;
   letter-spacing: .2px;
   white-space: nowrap;
   cursor: pointer;

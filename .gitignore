@@ -29,6 +29,9 @@ server/coverage
 # Drizzle local artifacts
 server/drizzle/meta
 
+# Local data (ECDICT sqlite ~100MB, etc) — not committed; bootstrap via scripts/build-ecdict.ts
+server/data/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

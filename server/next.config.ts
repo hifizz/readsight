@@ -3,6 +3,8 @@ import type { NextConfig } from 'next';
 const isDev = process.env.NODE_ENV !== 'production';
 
 const nextConfig: NextConfig = {
+  // better-sqlite3 是 native 模块，不能被 turbopack bundle 进 server chunks
+  serverExternalPackages: ['better-sqlite3'],
   async headers() {
     // 开发期允许 chrome-extension:// 任意来源直连；生产前必须改成 chrome-extension://<ext-id>
     // 白名单。这里只针对 /api/* 放开，不影响其他路由。
