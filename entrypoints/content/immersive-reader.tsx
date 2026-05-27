@@ -401,7 +401,8 @@ const IMMERSIVE_CSS = `
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 4px 28px 64px;
+  /* 顶部无 padding —— 给 sticky colhead 紧贴 header 留位；侧/底正常 */
+  padding: 0 28px 64px;
   /* 浅 scrollbar，与白底协调 */
   scrollbar-color: rgba(0,0,0,0.25) transparent;
 }
@@ -421,19 +422,21 @@ const IMMERSIVE_CSS = `
   align-items: start;
   max-width: 1200px;
   margin: 0 auto;
-  padding-top: 16px;
+  /* 无 padding-top —— colhead 自己控；正文起始处由 colhead 的 padding-bottom 留白 */
 }
 .eag-imm-colhead {
   position: sticky;
   top: 0;
-  background: linear-gradient(to bottom, #fff 70%, rgba(255,255,255,0));
-  padding: 8px 0 12px;
+  /* 实心白底 + 细底阴影：内容滚动时被完全遮挡，与 header 自然连成顶部条 */
+  background: #fff;
+  padding: 14px 0 12px;
   font-size: 11px;
   font-weight: 600;
   color: #999;
   letter-spacing: .5px;
   text-transform: uppercase;
   z-index: 1;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.06);
 }
 .eag-imm-cell {
   line-height: 1.75;
@@ -449,9 +452,11 @@ const IMMERSIVE_CSS = `
 .eag-imm-zh {
   color: #1a1a1a;
   font-family: system-ui, -apple-system, 'PingFang SC', 'Hiragino Sans GB', sans-serif;
-  font-weight: 300;
-  font-size: 17px;
-  opacity: 0.85;
+  /* 对齐 flow 译文样式（用户偏好） */
+  font-weight: 400;
+  font-size: 18px;
+  opacity: 0.7;
+  line-height: 1.6;
 }
 
 /* === flow (沉浸单列) === */
