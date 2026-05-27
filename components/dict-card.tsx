@@ -143,7 +143,10 @@ function ExchangeRow({
     <div className="eag-exchange">
       {lemma && (
         <>
-          <span className="eag-ex-lemma">原形 {lemma}</span>
+          <span className="eag-ex-pair eag-ex-lemma">
+            <span className="eag-ex-label">原形</span>
+            <span>{lemma}</span>
+          </span>
           {segments.length > 0 && <span className="eag-ex-sep"> · </span>}
         </>
       )}
@@ -152,9 +155,12 @@ function ExchangeRow({
         return (
           <span key={i}>
             {i > 0 && <span className="eag-ex-sep"> · </span>}
-            <span className="eag-ex-label">{s.label}</span>{' '}
-            <span className={isHit ? 'eag-ex-word eag-ex-hit' : 'eag-ex-word'}>
-              {s.word}
+            {/* label + word 包成 nowrap pair，gap 由 CSS 控（避免 CJK→Latin 字面空格被拉宽） */}
+            <span className="eag-ex-pair">
+              <span className="eag-ex-label">{s.label}</span>
+              <span className={isHit ? 'eag-ex-word eag-ex-hit' : 'eag-ex-word'}>
+                {s.word}
+              </span>
             </span>
           </span>
         );
@@ -298,25 +304,30 @@ export const DICT_CARD_CSS = `
   100% { opacity: 0;  transform: scale(1.25); }
 }
 
-/* compact 释义 —— 两栏 flex：POS 固定 32px 左栏，body 右栏承载 EN + CN，
- * 长 EN wrap 时自动吊起对齐到自己的左缘（不会回到 POS 列）。 */
+/* compact 释义 —— CSS Grid 两列：POS 列宽 = auto（取本卡所有 POS 中最长那个的
+ * 实际宽度），所有行共享这一宽度；每行 POS → body gap 固定 6px。
+ *
+ * 为什么不用 flex + 固定 width：POS 长度从 "n." 到 "interj." 差几倍，写死宽
+ * 度要么截长 POS、要么让短 POS 跟正文拉远。grid auto-track 是真正的"按内
+ * 容自适应"，把这个问题一次解决。
+ *
+ * .eag-def-row 用 display:contents 把自己从盒模型里抽掉，让它的两个子
+ * 元素直接成为父 grid 的 item，自动占据相邻两列。 */
 .eag-dict-card .eag-defs {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 6px;
+  row-gap: 8px;
+  align-items: baseline;
   color: var(--eag-ink-soft);
 }
-.eag-dict-card .eag-def-row {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  margin-bottom: 8px;
-}
-.eag-dict-card .eag-def-row:last-child { margin-bottom: 0; }
+.eag-dict-card .eag-def-row { display: contents; }
 .eag-dict-card .eag-pos {
-  flex: 0 0 auto;
-  width: 32px;
   color: var(--eag-muted);
   font-style: italic;
   font-family: var(--eag-ui);
   font-size: 12.5px;
+  white-space: nowrap; /* POS 不允许换行劈裂，否则 auto track 测量会乱 */
 }
 .eag-dict-card .eag-def-body {
   flex: 1 1 auto;
@@ -407,9 +418,14 @@ export const DICT_CARD_CSS = `
   letter-spacing: .02em;
   line-height: 1.55;
 }
-.eag-dict-card .eag-ex-lemma {
-  color: var(--eag-ink);
-  font-weight: 600;
+.eag-dict-card .eag-ex-lemma { color: var(--eag-ink); font-weight: 600; }
+/* label + word 锁成不可换行对，gap 4px 由 CSS 精确控（不靠字面空格） */
+.eag-dict-card .eag-ex-pair {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  letter-spacing: 0;
+  white-space: nowrap;
 }
 .eag-dict-card .eag-ex-label { color: var(--eag-faint); }
 .eag-dict-card .eag-ex-word { color: var(--eag-ink-soft); }
