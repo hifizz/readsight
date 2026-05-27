@@ -400,10 +400,10 @@ const IMMERSIVE_CSS = `
   /* block 之间用 p/h 自身的 margin 控间距，这里不加外距 */
 }
 .eag-imm-flow-en {
-  color: #1a1a1a;
+  color: #111;
   font-family: Georgia, 'Iowan Old Style', 'Source Serif Pro', serif;
-  font-size: 19px;
-  line-height: 1.8;
+  font-size: 18px;
+  line-height: 1.6;
   margin: 0;
   word-break: break-word;
 }
@@ -417,11 +417,13 @@ const IMMERSIVE_CSS = `
 
 .eag-imm-flow-zh {
   font-family: system-ui, -apple-system, 'PingFang SC', 'Hiragino Sans GB', sans-serif;
-  font-size: 16px;
-  font-weight: 300;
+  font-size: 18px;
+  font-weight: 400;
   color: #1a1a1a;
-  opacity: 0.65;
-  line-height: 1.65;
+  /* 蒙层纯白底，译文独立成行（不像 inline 模式有原文做上下文锚），
+     opacity 太低会让眼睛抓不到。对齐 split 视觉 0.85 */
+  opacity: 0.7;
+  line-height: 1.6;
   margin: 4px 0 22px;
 }
 
