@@ -1,15 +1,18 @@
 /**
- * 沉浸式对照阅读（M3 v2）—— FAB 菜单第三个入口"对照阅读"打开本组件。
+ * 沉浸式阅读 overlay —— FAB 菜单"对照阅读 / 沉浸阅读"打开本组件。
  *
- * 跟"翻译正文"inline 注入模式正交：本组件打开一个全屏蒙层，左右分栏 Grid
- * 布局，左原文 / 右译文逐段对齐，单一滚动条同步驱动。复用 translate.tsx
- * 的 extractArticleBlocks + translateBatchViaBackground + 占位符还原管线，
- * 命中翻译缓存时秒回。
+ * 两种 layout 共用一套 shell（蒙层 / header / 翻译管线 / ESC + ×）：
+ *   - 'split' 双栏：左原文 / 右译文，Grid 行高对齐
+ *   - 'flow'  单列：原文 + 译文上下叠（视觉同 inline 模式），居中 ~720px，专心读
+ *
+ * 跟"翻译正文"inline 注入模式正交：本组件不动宿主页面 DOM，纯粹抽文本→渲染。
+ * 复用 translate.tsx 的 extractArticleBlocks + translateBatchViaBackground +
+ * 占位符还原管线，命中翻译缓存时秒回。
  *
  * 跨 shadow root 通讯：FAB 与本组件挂在独立 shadow root，模块级 React state
- * 跨不过去；用 window 自定义事件 'eag:open-immersive' 做信号桥。
+ * 跨不过去；用 window 自定义事件 'eag:open-reader' 做信号桥，detail.layout 选模式。
  */
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, createElement, useEffect, useState } from 'react';
 import {
   type ArticleBlock,
   extractArticleBlocks,
@@ -22,8 +25,11 @@ type CellStatus =
   | { kind: 'ok'; zh: string }
   | { kind: 'error' };
 
+type Layout = 'split' | 'flow';
+
 const BATCH_SIZE = 12;
 const CONCURRENCY = 4;
+const HEADING_TAGS = new Set(['H1', 'H2', 'H3', 'H4', 'H5', 'H6']);
 
 /** 把段落里残留的 ⟪C1⟫ 占位符替换回原 code 文本，纯文本渲染时调一次 */
 function restoreOriginalText(text: string, restoreMap: Map<string, string>): string {
@@ -32,13 +38,17 @@ function restoreOriginalText(text: string, restoreMap: Map<string, string>): str
 
 export function ImmersiveReader() {
   const [open, setOpen] = useState(false);
+  const [layout, setLayout] = useState<Layout>('split');
   const [blocks, setBlocks] = useState<ArticleBlock[]>([]);
   const [statuses, setStatuses] = useState<Map<string, CellStatus>>(new Map());
   const [title, setTitle] = useState('');
   const [toast, setToast] = useState<string | null>(null);
 
   useEffect(() => {
-    function onOpen() {
+    function onOpen(e: Event) {
+      const detail = (e as CustomEvent<{ layout?: Layout }>).detail;
+      const nextLayout: Layout = detail?.layout === 'flow' ? 'flow' : 'split';
+
       const extracted = extractArticleBlocks('article');
       if (extracted.length === 0) {
         // 没识别到正文 —— 显示 2s 浮提示，不打开蒙层。
@@ -47,6 +57,7 @@ export function ImmersiveReader() {
         setTimeout(() => setToast(null), 2200);
         return;
       }
+      setLayout(nextLayout);
       setBlocks(extracted);
       setTitle(document.title);
       const initial = new Map<string, CellStatus>();
@@ -55,8 +66,8 @@ export function ImmersiveReader() {
       setOpen(true);
       void translateAll(extracted);
     }
-    window.addEventListener('eag:open-immersive', onOpen);
-    return () => window.removeEventListener('eag:open-immersive', onOpen);
+    window.addEventListener('eag:open-reader', onOpen as EventListener);
+    return () => window.removeEventListener('eag:open-reader', onOpen as EventListener);
   }, []);
 
   // 打开时锁 body 滚动 + 监听 ESC
@@ -143,14 +154,11 @@ export function ImmersiveReader() {
   return (
     <>
       <style>{IMMERSIVE_CSS}</style>
-      <div
-        className="eag-imm-backdrop"
-        // 蒙层背景**不**响应点击关闭（避免误触丢失阅读位置 —— 设计决策）
-      >
+      <div className="eag-imm-backdrop">
         <div className="eag-imm-panel">
           <header className="eag-imm-header">
             <div className="eag-imm-title" title={title}>
-              {title || '对照阅读'}
+              {title || (layout === 'flow' ? '沉浸阅读' : '对照阅读')}
             </div>
             <button
               type="button"
@@ -162,32 +170,11 @@ export function ImmersiveReader() {
             </button>
           </header>
           <div className="eag-imm-scroll">
-            <div className="eag-imm-grid">
-              <div className="eag-imm-colhead eag-imm-colhead-en">原文</div>
-              <div className="eag-imm-colhead eag-imm-colhead-zh">译文</div>
-              {blocks.map((b) => {
-                const st = statuses.get(b.id);
-                return (
-                  <Fragment key={b.id}>
-                    <div className="eag-imm-cell eag-imm-en">
-                      {restoreOriginalText(b.text, b.restoreMap)}
-                    </div>
-                    <div className="eag-imm-cell eag-imm-zh">
-                      {!st || st.kind === 'loading' ? (
-                        <div className="eag-imm-skel">
-                          <span className="eag-imm-skel-bar" />
-                          <span className="eag-imm-skel-bar eag-imm-skel-bar-2" />
-                        </div>
-                      ) : st.kind === 'error' ? (
-                        <span className="eag-imm-error">翻译失败</span>
-                      ) : (
-                        st.zh
-                      )}
-                    </div>
-                  </Fragment>
-                );
-              })}
-            </div>
+            {layout === 'split' ? (
+              <SplitView blocks={blocks} statuses={statuses} />
+            ) : (
+              <FlowView blocks={blocks} statuses={statuses} />
+            )}
           </div>
         </div>
       </div>
@@ -195,14 +182,90 @@ export function ImmersiveReader() {
   );
 }
 
+function SplitView({
+  blocks,
+  statuses,
+}: {
+  blocks: ArticleBlock[];
+  statuses: Map<string, CellStatus>;
+}) {
+  return (
+    <div className="eag-imm-grid">
+      <div className="eag-imm-colhead eag-imm-colhead-en">原文</div>
+      <div className="eag-imm-colhead eag-imm-colhead-zh">译文</div>
+      {blocks.map((b) => {
+        const st = statuses.get(b.id);
+        return (
+          <Fragment key={b.id}>
+            <div className="eag-imm-cell eag-imm-en">
+              {restoreOriginalText(b.text, b.restoreMap)}
+            </div>
+            <div className="eag-imm-cell eag-imm-zh">
+              <ZhContent status={st} />
+            </div>
+          </Fragment>
+        );
+      })}
+    </div>
+  );
+}
+
+function FlowView({
+  blocks,
+  statuses,
+}: {
+  blocks: ArticleBlock[];
+  statuses: Map<string, CellStatus>;
+}) {
+  return (
+    <article className="eag-imm-flow">
+      {blocks.map((b) => {
+        const st = statuses.get(b.id);
+        const tag = b.element.tagName;
+        const isHeading = HEADING_TAGS.has(tag);
+        // 标题用原 hN 标签保持语义；正文用 p。inline tag 在抽取时已被折叠进段落。
+        const enTag = isHeading ? tag.toLowerCase() : 'p';
+        const enClass = `eag-imm-flow-en eag-imm-flow-en-${enTag}`;
+        return (
+          <div className="eag-imm-flow-block" key={b.id}>
+            {createElement(
+              enTag,
+              { className: enClass },
+              restoreOriginalText(b.text, b.restoreMap),
+            )}
+            <div className="eag-imm-flow-zh">
+              <ZhContent status={st} compact={isHeading} />
+            </div>
+          </div>
+        );
+      })}
+    </article>
+  );
+}
+
+function ZhContent({ status, compact }: { status: CellStatus | undefined; compact?: boolean }) {
+  if (!status || status.kind === 'loading') {
+    return (
+      <div className={compact ? 'eag-imm-skel eag-imm-skel-compact' : 'eag-imm-skel'}>
+        <span className="eag-imm-skel-bar" />
+        {!compact && <span className="eag-imm-skel-bar eag-imm-skel-bar-2" />}
+      </div>
+    );
+  }
+  if (status.kind === 'error') {
+    return <span className="eag-imm-error">翻译失败</span>;
+  }
+  return <>{status.zh}</>;
+}
+
 /**
  * Scoped CSS（运行在独立 shadow root，不会污染宿主页面）。
  *
  * 关键设计：
- *   - 单 scroll 容器 + Grid：行高自动取左右最大值，对齐与同步都是 CSS 天然结果，零 JS
- *   - 字号 / 行高 / 颜色统一一套，不继承宿主页面（用户明确选了"仅文本 + 通用排版"）
- *   - 译文风格沿用 inline 译文（opacity 0.78、font-weight 300、text-autospace），
- *     和"翻译正文"模式视觉一致
+ *   - split: 单 scroll 容器 + Grid，行高自动取左右最大值，对齐与同步零 JS
+ *   - flow:  单列居中 max-width 720px，原文用对应 hN/p 标签，译文紧贴下方
+ *     —— 视觉跟 inline 注入模式一致（opacity 0.65、font-weight 300、margin 节奏）
+ *   - 字号 / 行高 / 颜色统一一套，不继承宿主页面
  */
 const IMMERSIVE_CSS = `
 .eag-imm-backdrop {
@@ -272,8 +335,8 @@ const IMMERSIVE_CSS = `
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 4px 28px 48px;
-  /* 浅一点的 scrollbar，与白底协调 */
+  padding: 4px 28px 64px;
+  /* 浅 scrollbar，与白底协调 */
   scrollbar-color: rgba(0,0,0,0.25) transparent;
 }
 .eag-imm-scroll::-webkit-scrollbar { width: 10px; }
@@ -283,6 +346,7 @@ const IMMERSIVE_CSS = `
   border: 2px solid #fff;
 }
 
+/* === split (对照) === */
 .eag-imm-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -293,7 +357,6 @@ const IMMERSIVE_CSS = `
   margin: 0 auto;
   padding-top: 16px;
 }
-
 .eag-imm-colhead {
   position: sticky;
   top: 0;
@@ -306,11 +369,9 @@ const IMMERSIVE_CSS = `
   text-transform: uppercase;
   z-index: 1;
 }
-
 .eag-imm-cell {
   line-height: 1.75;
   word-break: break-word;
-  /* 中英文 / 中文数字之间自动加空格 */
   -webkit-text-autospace: normal;
   text-autospace: normal;
 }
@@ -327,19 +388,57 @@ const IMMERSIVE_CSS = `
   opacity: 0.85;
 }
 
+/* === flow (沉浸单列) === */
+.eag-imm-flow {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 36px 8px 96px;
+  -webkit-text-autospace: normal;
+  text-autospace: normal;
+}
+.eag-imm-flow-block {
+  /* block 之间用 p/h 自身的 margin 控间距，这里不加外距 */
+}
+.eag-imm-flow-en {
+  color: #1a1a1a;
+  font-family: Georgia, 'Iowan Old Style', 'Source Serif Pro', serif;
+  font-size: 19px;
+  line-height: 1.8;
+  margin: 0;
+  word-break: break-word;
+}
+.eag-imm-flow-en-p { margin: 0; }
+.eag-imm-flow-en-h1 { font-size: 34px; font-weight: 700; line-height: 1.25; margin: 4px 0 8px; }
+.eag-imm-flow-en-h2 { font-size: 26px; font-weight: 700; line-height: 1.3;  margin: 36px 0 8px; }
+.eag-imm-flow-en-h3 { font-size: 21px; font-weight: 600; line-height: 1.35; margin: 28px 0 6px; }
+.eag-imm-flow-en-h4,
+.eag-imm-flow-en-h5,
+.eag-imm-flow-en-h6 { font-size: 18px; font-weight: 600; line-height: 1.4; margin: 20px 0 4px; }
+
+.eag-imm-flow-zh {
+  font-family: system-ui, -apple-system, 'PingFang SC', 'Hiragino Sans GB', sans-serif;
+  font-size: 16px;
+  font-weight: 300;
+  color: #1a1a1a;
+  opacity: 0.65;
+  line-height: 1.65;
+  margin: 4px 0 22px;
+}
+
 .eag-imm-error {
   color: #b94a4a;
   opacity: 0.7;
   font-size: 14px;
 }
 
-/* 译文未到达时的 skeleton */
+/* skeleton（译文未到达） */
 .eag-imm-skel {
   display: flex;
   flex-direction: column;
   gap: 8px;
   padding: 4px 0;
 }
+.eag-imm-skel-compact { padding: 0; }
 .eag-imm-skel-bar {
   display: block;
   height: 12px;

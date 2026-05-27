@@ -1539,7 +1539,9 @@ function ModeMenu({
               // 沉浸式对照阅读走独立 overlay，不复用 inline 注入路径。
               // 用 window 事件跨 shadow root 通讯：FAB 和 ImmersiveReader 各自挂在
               // 独立 shadow root 里，模块级状态 / React Context 都跨不过去。
-              window.dispatchEvent(new CustomEvent('eag:open-immersive'));
+              window.dispatchEvent(
+                new CustomEvent('eag:open-reader', { detail: { layout: 'split' } }),
+              );
               onCloseMenu();
             }}
             style={menuItemStyle}
@@ -1548,7 +1550,24 @@ function ModeMenu({
           >
             <div style={{ fontWeight: 500 }}>对照阅读</div>
             <div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>
-              左右分屏沉浸式精读
+              左右分屏，原文 / 译文逐段对齐
+            </div>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              window.dispatchEvent(
+                new CustomEvent('eag:open-reader', { detail: { layout: 'flow' } }),
+              );
+              onCloseMenu();
+            }}
+            style={menuItemStyle}
+            onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(0,0,0,0.04)')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+          >
+            <div style={{ fontWeight: 500 }}>沉浸阅读</div>
+            <div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>
+              单列居中，剥掉网页噪音
             </div>
           </button>
           <div style={dividerStyle} />
