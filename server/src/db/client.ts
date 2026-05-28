@@ -16,7 +16,17 @@ if (!url) {
 }
 
 const globalForPg = globalThis as unknown as { __pg?: ReturnType<typeof postgres> };
-const sql = globalForPg.__pg ?? postgres(url, { max: 5 });
+// idle_timeout / max_lifetime：让客户端主动回收老旧连接，规避电脑休眠 /
+// Postgres 重启 / 长 idle 后第一个 query 拿到 ECONNRESET 的情况。
+// 本地 dev 单实例后端，pool 上限 5 已经够；30s idle / 30min lifetime 是经验值。
+const sql =
+  globalForPg.__pg ??
+  postgres(url, {
+    max: 5,
+    idle_timeout: 30,
+    max_lifetime: 60 * 30,
+    connect_timeout: 10,
+  });
 if (process.env.NODE_ENV !== 'production') globalForPg.__pg = sql;
 
 export const db = drizzle(sql, { schema });
