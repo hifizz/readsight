@@ -4,7 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Chrome MV3 extension ("English Agent") for immersive English reading on TechCrunch-style article pages: 双语全页翻译 (M3) + 划词精读 (M1) + 学习记录 (M2). Built with WXT + React 19; backend is `server/` (Next.js 16). Full milestone status in `docs/PROJECT_STATUS.md`.
+Chrome MV3 extension —— 对外名 **见微 Readsight**（中文主名「见微」+ 英文 wordmark「Readsight」），repo / 旧文档里的内部代号是 `English Agent`，新代码不要再用。
+沉浸式英语精读：双语全页翻译 (M3) + 划词精读 (M1) + 学习记录 (M2). Built with WXT + React 19; backend is `server/` (Next.js 16). 命名决策见 `docs/09-对外宣传与上架物料.md`；里程碑状态见 `docs/PROJECT_STATUS.md`。
+
+> 代码内一切产品名都已统一：日志前缀 `[readsight]`、storage / context-menu / shadow-host id `readsight:*` / `readsight-*`、CSS 类名 `.readsight-translation`、HTTP `X-Title: Readsight`。CSS 内部前缀仍是 `eag-`（pill / popup / immersive-reader 的 scoped 样式）—— 那是 shadow DOM 内的局部 namespace，不外泄，不算对外名。
 
 ## Commands
 

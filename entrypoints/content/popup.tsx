@@ -92,7 +92,7 @@ function sendAsk(payload: AskWithSelectionPayload): void {
   const msg: BackgroundMessage = { type: 'ASK_WITH_SELECTION', payload };
   chrome.runtime
     .sendMessage(msg)
-    .catch((err) => console.warn('[english-agent] ASK_WITH_SELECTION failed', err));
+    .catch((err) => console.warn('[readsight] ASK_WITH_SELECTION failed', err));
 }
 
 // --- 视觉常量 ------------------------------------------------------------
@@ -388,7 +388,7 @@ function useInlineLookup(ctx: SelectionContext | null): LookupState {
       })
       .catch((err) => {
         if (cancelled) return;
-        console.warn('[english-agent] inline lookup failed', err);
+        console.warn('[readsight] inline lookup failed', err);
         setState({ kind: 'miss' });
       });
     return () => {
@@ -459,7 +459,7 @@ function useInlineTranslate(): {
       })
       .catch((err) => {
         if (myId !== reqIdRef.current) return;
-        console.warn('[english-agent] inline translate failed', err);
+        console.warn('[readsight] inline translate failed', err);
         setState({ kind: 'error', message: '翻译失败' });
       });
   }, []);
@@ -801,7 +801,7 @@ function toggleSpeak(
 ): void {
   const synth = window.speechSynthesis;
   if (!synth) {
-    console.warn('[english-agent] speechSynthesis unavailable');
+    console.warn('[readsight] speechSynthesis unavailable');
     return;
   }
   if (speakingTag === 'pronunciation') {

@@ -13,7 +13,7 @@
  *   ─────────────────────────────────
  *   Composer                                    固定
  *
- * 顶部不再放 "English Agent" 标题栏 —— Chrome side panel 已有自己的 chrome，
+ * 顶部不再放 "见微 Readsight" 标题栏 —— Chrome side panel 已有自己的 chrome，
  * demo 阶段画的那条只是示意。tab 栏右侧只放一个"新会话"图标按钮。
  *
  * 关键设计：
@@ -50,8 +50,8 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
 const BACKEND = import.meta.env.WXT_BACKEND_URL ?? 'http://localhost:4010';
-const STORAGE_KEY_LATEST = 'english-agent:latest-selection-id';
-const STORAGE_KEY_PREFIX = 'english-agent:selection:';
+const STORAGE_KEY_LATEST = 'readsight:latest-selection-id';
+const STORAGE_KEY_PREFIX = 'readsight:selection:';
 
 type TabKey = 'chat' | 'records';
 
@@ -265,7 +265,7 @@ function SelectionBridge({
         try {
           await runtime.threads.switchToNewThread();
         } catch (err) {
-          console.warn('[english-agent] switchToNewThread failed', err);
+          console.warn('[readsight] switchToNewThread failed', err);
         }
       }
 
@@ -312,7 +312,7 @@ function SelectionBridge({
     function onMessage(message: BackgroundMessage) {
       if (message.type === 'SELECTION_READY') {
         dispatch(message.payload).catch((err) =>
-          console.warn('[english-agent] dispatch failed', err),
+          console.warn('[readsight] dispatch failed', err),
         );
       }
     }

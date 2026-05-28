@@ -43,8 +43,8 @@ export const openrouterModel: LanguageModel | null = apiKey
       apiKey,
       fetch: undiciFetch as unknown as typeof globalThis.fetch,
       headers: {
-        'HTTP-Referer': 'https://github.com/english-agent',
-        'X-Title': 'English Agent',
+        'HTTP-Referer': 'https://github.com/readsight',
+        'X-Title': 'Readsight',
       },
     })(OPENROUTER_MODEL_ID)
   : null;

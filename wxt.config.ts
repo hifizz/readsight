@@ -26,17 +26,20 @@ export default defineConfig({
     ],
   },
   manifest: {
-    name: 'English Agent',
+    // 对外名 = 中文主名「见微」+ 英文 wordmark「Readsight」+ 角色定位
+    // 见 docs/09-对外宣传与上架物料.md §二「名称候选 · 主推」
+    name: '见微 Readsight：英文精读阅读伙伴',
     description: '沉浸式英语精读 (任意英文页 · 划词精读 + 双语翻译)',
     permissions: ['sidePanel', 'storage', 'activeTab', 'contextMenus'],
     action: {
-      default_title: 'English Agent',
+      // 工具栏 hover tooltip 用短版，长版只用在商店列表
+      default_title: '见微 Readsight',
     },
     commands: {
       'toggle-translate': {
         // 用 Alt+T：Chrome 没占；macOS 上不跟系统快捷键冲突
         suggested_key: { default: 'Alt+T', mac: 'Alt+T' },
-        description: '翻译 / 撤销当前页面（English Agent）',
+        description: '翻译 / 撤销当前页面（见微）',
       },
     },
   },

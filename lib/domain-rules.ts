@@ -21,7 +21,7 @@ export interface DomainRule {
   mode: TranslateMode;
 }
 
-const STORAGE_KEY = 'english-agent:domain-rules';
+const STORAGE_KEY = 'readsight:domain-rules';
 
 /** hostname 规范化 —— 剥 www. 前缀，全小写。 */
 export function normalizeHostname(hostname: string): string {
@@ -34,7 +34,7 @@ async function readAll(): Promise<Record<string, DomainRule>> {
     const raw = got[STORAGE_KEY];
     return raw && typeof raw === 'object' ? (raw as Record<string, DomainRule>) : {};
   } catch (err) {
-    console.warn('[english-agent] domain-rules read failed', err);
+    console.warn('[readsight] domain-rules read failed', err);
     return {};
   }
 }
@@ -43,7 +43,7 @@ async function writeAll(rules: Record<string, DomainRule>): Promise<void> {
   try {
     await chrome.storage.sync.set({ [STORAGE_KEY]: rules });
   } catch (err) {
-    console.warn('[english-agent] domain-rules write failed', err);
+    console.warn('[readsight] domain-rules write failed', err);
   }
 }
 

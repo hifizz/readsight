@@ -124,7 +124,7 @@ export function ImmersiveReader() {
         return next;
       });
     } catch (err) {
-      console.warn('[english-agent] immersive batch failed', err);
+      console.warn('[readsight] immersive batch failed', err);
       setStatuses((prev) => {
         const next = new Map(prev);
         for (const b of chunk) next.set(b.id, { kind: 'error' });

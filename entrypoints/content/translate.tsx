@@ -104,7 +104,7 @@ const READABILITY_COVERAGE_FLOOR = 0.3;
 const HEADING_TAGS = new Set(['H1', 'H2', 'H3', 'H4', 'H5', 'H6']);
 // DeepSeek 翻 12 段 ~2-4s + 网络；30s 给足重试 / 兜底链余量。
 const BATCH_TIMEOUT_MS = 30_000;
-const TRANSLATION_CLASS = 'english-agent-translation';
+const TRANSLATION_CLASS = 'readsight-translation';
 const BLOCK_ID_ATTR = 'data-eag-id';
 
 /**
@@ -158,7 +158,7 @@ function buildReadabilityAllowlist(): Set<string> | null {
         .filter((s) => s.length >= 30),
     );
   } catch (err) {
-    console.warn('[english-agent] readability parse failed', err);
+    console.warn('[readsight] readability parse failed', err);
     return null;
   }
 }
@@ -248,7 +248,7 @@ export function restorePreserves(translated: string, restoreMap: Map<string, str
 export type TranslateMode = 'article' | 'page';
 
 /** page 模式下，依然要排除的容器 —— 翻译输出 / FAB / shadow UI 自身。 */
-const PAGE_MODE_HARD_EXCLUDE = '.english-agent-translation, script, style, noscript';
+const PAGE_MODE_HARD_EXCLUDE = '.readsight-translation, script, style, noscript';
 /** page 模式更宽松的最短文本：UI 标签 / 短按钮文案也要翻 */
 const MIN_BLOCK_LENGTH_PAGE = 2;
 
@@ -299,7 +299,7 @@ export function extractArticleBlocks(
     // 此时 querySelectorAll 拉不到新内容。重新定位 root；但仍跳过 Readability 重判定。
     const refreshed = findArticleRoot();
     console.log(
-      '[english-agent] rescan: cachedArticleRoot detached, refreshing',
+      '[readsight] rescan: cachedArticleRoot detached, refreshing',
       { old: cachedArticleRoot?.tagName, new: refreshed?.tagName },
     );
     cachedArticleRoot = refreshed;
@@ -359,7 +359,7 @@ export function extractArticleBlocks(
   const useAllowlist = allow !== null && coverage >= READABILITY_COVERAGE_FLOOR;
   if (allow && !useAllowlist) {
     console.log(
-      `[english-agent] Readability allowlist 覆盖率 ${(coverage * 100).toFixed(0)}% < ${READABILITY_COVERAGE_FLOOR * 100}%，丢弃 allowlist（${nonHeading.length} 候选）`,
+      `[readsight] Readability allowlist 覆盖率 ${(coverage * 100).toFixed(0)}% < ${READABILITY_COVERAGE_FLOOR * 100}%，丢弃 allowlist（${nonHeading.length} 候选）`,
     );
   }
 
@@ -840,7 +840,7 @@ class TranslationOrchestrator {
         this.callbacks?.onProgress();
       }
     } catch (err) {
-      console.warn('[english-agent] batch translate failed', err);
+      console.warn('[readsight] batch translate failed', err);
       for (const id of ids) {
         const block = this.blocks.get(id);
         if (!block) continue;
@@ -932,7 +932,7 @@ export function togglePageTranslation(mode: TranslateMode = 'page'): void {
   }
   const blocks = extractArticleBlocks(mode);
   if (blocks.length === 0) {
-    console.warn('[english-agent] no translatable blocks found');
+    console.warn('[readsight] no translatable blocks found');
     return;
   }
   lastUsedMode = mode;
@@ -954,7 +954,7 @@ export function togglePageTranslation(mode: TranslateMode = 'page'): void {
 // 这类滚动续渲染场景。
 //
 // 为什么不会自激震荡：
-//   - 我们自己注入的 .english-agent-translation 节点也会触发 mutation，
+//   - 我们自己注入的 .readsight-translation 节点也会触发 mutation，
 //     但 extractArticleBlocks 里 PAGE_MODE_HARD_EXCLUDE / TRANSLATION_CLASS
 //     都把它过掉，orchestrator.addBlocks 又按 id 去重，
 //     结果是"找到 0 个新块"，自然停下。
@@ -992,7 +992,7 @@ function rescanForNewBlocks(mode: TranslateMode): void {
   const all = extractArticleBlocks(mode, true);
   const added = orchestrator.addBlocks(all);
   console.log(
-    `[english-agent] rescan(${mode}): scanned=${all.length}, added=${added}, total=${orchestrator.totalCount}`,
+    `[readsight] rescan(${mode}): scanned=${all.length}, added=${added}, total=${orchestrator.totalCount}`,
   );
   if (added > 0) {
     setModuleState({ ...moduleState, total: orchestrator.totalCount });
@@ -1157,7 +1157,7 @@ function handleSpaUrlChange(): void {
   const from = lastUrl;
   lastUrl = location.href;
   if (currentDomainRule?.auto !== 'always') return;
-  console.log('[english-agent] SPA url change → re-translate', { from, to: location.href });
+  console.log('[readsight] SPA url change → re-translate', { from, to: location.href });
   if (moduleState.status === 'active') {
     togglePageTranslation(); // stop & undo
   }
@@ -1169,7 +1169,7 @@ function handleSpaUrlChange(): void {
     const detection = await refreshPageLangDetection();
     if (shouldSkipForSameLanguage(detection)) {
       console.log(
-        `[english-agent] SPA re-translate skipped: page lang ${detection.lang} matches user`,
+        `[readsight] SPA re-translate skipped: page lang ${detection.lang} matches user`,
       );
       return;
     }
@@ -1195,7 +1195,7 @@ function installHistoryHooksOnce(): void {
   window.addEventListener('popstate', handleSpaUrlChange);
 }
 
-const FAB_POSITION_KEY = 'english-agent:fab-pos';
+const FAB_POSITION_KEY = 'readsight:fab-pos';
 
 /** "rule = undefined" 表示首次还没读完 storage，避免 flash 出 FAB 后又因 never 收掉 */
 type RuleLoadState = DomainRule | null | 'loading';
@@ -1264,7 +1264,7 @@ export function TranslateFab() {
     autoStartedRef.current = true;
     if (shouldSkipForSameLanguage(pageLangDetection)) {
       console.log(
-        `[english-agent] auto-translate skipped: page lang ${pageLangDetection.lang} matches user`,
+        `[readsight] auto-translate skipped: page lang ${pageLangDetection.lang} matches user`,
       );
       return;
     }

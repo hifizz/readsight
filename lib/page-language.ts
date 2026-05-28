@@ -65,7 +65,7 @@ export async function detectPageLanguage(): Promise<DetectionResult> {
           };
         }
       } catch (err) {
-        console.warn('[english-agent] chrome.i18n.detectLanguage failed', err);
+        console.warn('[readsight] chrome.i18n.detectLanguage failed', err);
       }
     }
   }

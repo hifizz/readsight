@@ -21,13 +21,13 @@ import type {
 } from '@/lib/messaging';
 
 const BACKEND = import.meta.env.WXT_BACKEND_URL ?? 'http://localhost:4010';
-const STORAGE_KEY_LATEST = 'english-agent:latest-selection-id';
-const STORAGE_KEY_PREFIX = 'english-agent:selection:';
+const STORAGE_KEY_LATEST = 'readsight:latest-selection-id';
+const STORAGE_KEY_PREFIX = 'readsight:selection:';
 
 /** 右键菜单 id —— 三项：选区翻译 / 整页翻译 / 重置本站规则（通用恢复入口） */
-const MENU_ID_TRANSLATE_SELECTION = 'english-agent-translate-selection';
-const MENU_ID_TRANSLATE_PAGE = 'english-agent-translate-page';
-const MENU_ID_RESET_RULE = 'english-agent-reset-rule';
+const MENU_ID_TRANSLATE_SELECTION = 'readsight-translate-selection';
+const MENU_ID_TRANSLATE_PAGE = 'readsight-translate-page';
+const MENU_ID_RESET_RULE = 'readsight-reset-rule';
 
 /** 给 active tab 发消息的通用工具 —— 拿不到 tabId 时自动查 active tab */
 function sendToActiveTab(message: BackgroundMessage, tabId?: number): void {
@@ -45,7 +45,7 @@ function sendToActiveTab(message: BackgroundMessage, tabId?: number): void {
         chrome.tabs.sendMessage(id, message).catch(() => {});
       }
     })
-    .catch((err) => console.warn('[english-agent] tabs.query failed', err));
+    .catch((err) => console.warn('[readsight] tabs.query failed', err));
 }
 
 /** 触发当前 tab 的 content script 切换全文翻译（右键 / 快捷键共用） */
@@ -68,7 +68,7 @@ export default defineBackground(() => {
   // 我们没有 popup，所以打开 side panel 是更对的语义。
   chrome.sidePanel
     .setPanelBehavior({ openPanelOnActionClick: true })
-    .catch((err: unknown) => console.error('[english-agent] setPanelBehavior failed', err));
+    .catch((err: unknown) => console.error('[readsight] setPanelBehavior failed', err));
 
   // 右键菜单：两项独立
   //   1. "翻译选中内容"：只在 selection 上下文显示，点 → 打开划词 Dialog
@@ -78,23 +78,23 @@ export default defineBackground(() => {
     try {
       chrome.contextMenus.create({
         id: MENU_ID_TRANSLATE_SELECTION,
-        title: '翻译选中内容 (English Agent)',
+        title: '翻译选中内容 (见微)',
         contexts: ['selection'],
       });
       chrome.contextMenus.create({
         id: MENU_ID_TRANSLATE_PAGE,
-        title: '翻译整页 (English Agent)',
+        title: '翻译整页 (见微)',
         contexts: ['page', 'selection'],
       });
       // 第三项 —— 通用恢复入口：清掉本站规则。FAB 被 never 隐藏时是用户唯一
       // 的回路；same item 也能让用户在 always 站上"今天就别自动翻了"。
       chrome.contextMenus.create({
         id: MENU_ID_RESET_RULE,
-        title: '重置本站翻译规则 (English Agent)',
+        title: '重置本站翻译规则 (见微)',
         contexts: ['page', 'selection'],
       });
     } catch (err) {
-      console.warn('[english-agent] contextMenus.create:', err);
+      console.warn('[readsight] contextMenus.create:', err);
     }
   });
   chrome.contextMenus.onClicked.addListener((info, tab) => {
@@ -122,12 +122,12 @@ export default defineBackground(() => {
       if (sender.tab?.id != null) {
         chrome.sidePanel
           .open({ tabId: sender.tab.id })
-          .catch((err: unknown) => console.warn('[english-agent] sidePanel.open failed', err));
+          .catch((err: unknown) => console.warn('[readsight] sidePanel.open failed', err));
       }
       handleAskWithSelection(message.payload, sender)
         .then(() => sendResponse({ ok: true }))
         .catch((err) => {
-          console.error('[english-agent] handleAskWithSelection failed', err);
+          console.error('[readsight] handleAskWithSelection failed', err);
           sendResponse({ ok: false, error: String(err) });
         });
       return true; // 标记"我会异步 sendResponse"
@@ -140,9 +140,9 @@ export default defineBackground(() => {
         body: JSON.stringify({ items: message.payload }),
       })
         .then((r) => {
-          if (!r.ok) console.warn('[english-agent] /api/encounter HTTP', r.status);
+          if (!r.ok) console.warn('[readsight] /api/encounter HTTP', r.status);
         })
-        .catch((err) => console.warn('[english-agent] /api/encounter failed', err));
+        .catch((err) => console.warn('[readsight] /api/encounter failed', err));
       return false;
     }
     if (message.type === 'HIGHLIGHT_REQUEST') {
@@ -162,8 +162,8 @@ export default defineBackground(() => {
       // content script 通知翻译开 / 关 → 更新"翻译整页"项的标题
       // 注意：chrome.contextMenus 是全局的，多 tab 时按最近活动 tab 状态展示
       const title = message.payload.active
-        ? '撤销整页翻译 (English Agent)'
-        : '翻译整页 (English Agent)';
+        ? '撤销整页翻译 (见微)'
+        : '翻译整页 (见微)';
       chrome.contextMenus
         .update(MENU_ID_TRANSLATE_PAGE, { title })
         .catch?.(() => {

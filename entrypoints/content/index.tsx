@@ -5,7 +5,7 @@
  *   1. 监听用户在文章正文里的鼠标选区
  *   2. 选区一出现就同步抓全 `SelectionContext`（PRD §8.2 命门三：UI 元素只引用缓存，
  *      点击自身组件会清空 window.getSelection()，再去现取就拿不到了）
- *   3. 在 Shadow DOM 里渲染一个"Ask English Agent" pill 浮在选区右上
+ *   3. 在 Shadow DOM 里渲染一个 "Look up with Readsight" pill 浮在选区右上
  *   4. 用户点 pill → `chrome.runtime.sendMessage` 把 SelectionContext 丢给 background
  *      后续打开 sidepanel + 注入语境的事都由 background 总线接管
  *
@@ -22,7 +22,7 @@ import { SelectionPopup, openPopup, useIsPopupOpen } from './popup';
 import { clearDomainRule } from '@/lib/domain-rules';
 
 const BACKEND = import.meta.env.WXT_BACKEND_URL ?? 'http://localhost:4010';
-const KNOWN_ITEMS_KEY = 'english-agent:known-items';
+const KNOWN_ITEMS_KEY = 'readsight:known-items';
 const KNOWN_ITEMS_TTL_MS = 5 * 60 * 1000;
 const SCAN_MAX_CHARS = 5000;
 
@@ -41,7 +41,7 @@ export default defineContentScript({
   cssInjectionMode: 'ui',
   async main(ctx) {
     const ui = await createShadowRootUi(ctx, {
-      name: 'english-agent-pill',
+      name: 'readsight-pill',
       // overlay 模式 + 巨大 z-index：保证 pill 浮在宿主页面的导航 / sticky / 弹窗之上。
       position: 'overlay',
       alignment: 'top-left',
@@ -67,7 +67,7 @@ export default defineContentScript({
 
     // 全文翻译浮动按钮（M3 PRD §7.1）—— 独立 Shadow DOM，与 pill 状态解耦
     const fabUi = await createShadowRootUi(ctx, {
-      name: 'english-agent-fab',
+      name: 'readsight-fab',
       position: 'overlay',
       alignment: 'bottom-right',
       // 32-bit int 上限，跟很多站点同优先级时按 DOM 顺序决出胜负；
@@ -88,7 +88,7 @@ export default defineContentScript({
     // 沉浸式对照阅读（FAB 菜单"对照阅读"打开）—— 独立 Shadow DOM，蒙层全屏
     // 时不影响 FAB 状态机。监听 window 'eag:open-immersive' 事件触发显示。
     const immersiveUi = await createShadowRootUi(ctx, {
-      name: 'english-agent-immersive',
+      name: 'readsight-immersive',
       position: 'overlay',
       // alignment 对 fixed 定位的蒙层不重要 —— host 元素只是挂载点，内部用 position:fixed
       alignment: 'top-left',
@@ -133,7 +133,7 @@ export default defineContentScript({
         // 'never' 被清后 FAB 重新出现，'always' 被清后下次刷新不再自动翻。
         // 注：当前页面已经在跑的翻译不会因此停止 —— 用户可以手动撤销。
         void clearDomainRule(location.hostname);
-        console.log('[english-agent] domain rule reset for', location.hostname);
+        console.log('[readsight] domain rule reset for', location.hostname);
       }
       return false;
     });
@@ -152,12 +152,12 @@ export default defineContentScript({
 function openPopupFromCurrentSelection(): void {
   const sel = window.getSelection();
   if (!sel || sel.isCollapsed) {
-    console.warn('[english-agent] TRANSLATE_SELECTION: no active selection');
+    console.warn('[readsight] TRANSLATE_SELECTION: no active selection');
     return;
   }
   const text = sel.toString().trim();
   if (!text) {
-    console.warn('[english-agent] TRANSLATE_SELECTION: empty selection text');
+    console.warn('[readsight] TRANSLATE_SELECTION: empty selection text');
     return;
   }
   const range = sel.getRangeAt(0);
@@ -165,7 +165,7 @@ function openPopupFromCurrentSelection(): void {
   // 跟 Pill 一致的约束，避免把"菜单标题"这类噪音也送进 Dialog。
   const block = findContentBlock(range.startContainer);
   if (!block) {
-    console.warn('[english-agent] TRANSLATE_SELECTION: selection not in a content block');
+    console.warn('[readsight] TRANSLATE_SELECTION: selection not in a content block');
     return;
   }
   const ctx = buildSelectionContext(text, range, block);
@@ -175,7 +175,7 @@ function openPopupFromCurrentSelection(): void {
       activelyQueriedLemmas.add(resolveLemma(ctx.selection.text));
     }
   } catch (err) {
-    console.warn('[english-agent] resolveLemma in TRANSLATE_SELECTION threw', err);
+    console.warn('[readsight] resolveLemma in TRANSLATE_SELECTION threw', err);
   }
   const rect = range.getBoundingClientRect();
   openPopup(ctx, {
@@ -201,7 +201,7 @@ function highlightAnchor(anchor: SelectionContext['anchor']) {
     blocks.find((el) => ((el as HTMLElement).innerText ?? '').includes(needle)) ??
     blocks.find((el) => ((el as HTMLElement).innerText ?? '').includes(anchor.quote.exact));
   if (!target) {
-    console.warn('[english-agent] highlight: anchor not found', anchor.quote.exact);
+    console.warn('[readsight] highlight: anchor not found', anchor.quote.exact);
     return;
   }
   target.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -276,7 +276,7 @@ async function runPassiveScan() {
       /* background 没起来也无所谓，丢就丢 */
     });
   } catch (err) {
-    console.warn('[english-agent] passive scan failed', err);
+    console.warn('[readsight] passive scan failed', err);
   }
 }
 
@@ -299,7 +299,7 @@ async function fetchKnownLemmas(): Promise<Set<string>> {
     });
     return new Set(lemmas);
   } catch (err) {
-    console.warn('[english-agent] fetchKnownLemmas failed', err);
+    console.warn('[readsight] fetchKnownLemmas failed', err);
     return new Set();
   }
 }
@@ -392,7 +392,7 @@ function SelectionPill() {
               activelyQueriedLemmas.add(resolveLemma(ctx.selection.text));
             }
           } catch (err) {
-            console.warn('[english-agent] resolveLemma in pill click threw', err);
+            console.warn('[readsight] resolveLemma in pill click threw', err);
           }
           openPopup(ctx, {
             rect: {
@@ -404,7 +404,7 @@ function SelectionPill() {
           });
           setSnapshot(null);
         }}
-        aria-label="Look up with English Agent"
+        aria-label="Look up with Readsight"
         title="Look up"
         style={{ top, left }}
       >
