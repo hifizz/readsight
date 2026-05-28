@@ -79,10 +79,31 @@
 
 ---
 
+## 坑 4：`sr-only` skip-link 让整页 wrapper DIV 成为单一 unit，正文被祖先覆盖全部跳过
+
+**触发站点：** cerebras.ai（任何用 Tailwind `sr-only` / Bootstrap `.visually-hidden` 在顶层挂 a11y 跳转链接的站）
+
+**现象：** 主内容区一整块都不被翻译；只有 footer / 顶栏 banner 这种"挂在 page wrapper 外面"的少量段落得到译文。
+
+**根因：**
+1. Cerebras 站结构：`<body> → <div class="min-h-screen"> (9100px) → 全页内容`
+2. `min-h-screen` 内第一个子节点是 `<a class="sr-only ...">Skip to main content</a>`
+3. `sr-only` 不是 `display:none`，offsetParent 非空、rect 是 1×1px（clip 到角落）。原 `isRendered` 检测 `rect.width > 0 || height > 0` → 视为已渲染
+4. walker 从 "Skip to main content" 文本节点往上找 PAGE_BLOCK_TAG：A 不是 → DIV.min-h-screen 是 → `unit = DIV.min-h-screen`
+5. units 已含覆盖整页的外层 DIV，后续所有文本节点的 unit 都被祖先覆盖 → 跳过
+6. 仅 footer（挂在 min-h-screen 外面，是 body 的另一个直接子节点）能被收
+
+**修复：** 收紧 `isRendered`：rect 必须 **width > 1 且 height > 1**。`sr-only` 的 1×1px clip 现在被识别为不可见。`<body>` 仍单独豁免。
+
+**经验：** "offsetParent 非空" 不等于 "用户能看见"。a11y 库流行的 visually-hidden 技巧（position:absolute + 1×1 + overflow:hidden + clip）都属于这一类。任何"看不见但能被屏幕阅读器读到"的 trick 都会把不该当 block 的元素混进 walker。
+
+---
+
 ## 综合 checklist —— 改抽取 / 注入逻辑时过一遍
 
 - [ ] 抽 text 的递归是否排除了 `script / style / noscript / template`？
 - [ ] 是否过滤了 `display: none` 的元素？
+- [ ] 是否过滤了 `sr-only` / `.visually-hidden` 这种 1×1 clip 的 a11y 隐藏元素？
 - [ ] 选 unit 时是否考虑 anchor 的父容器对子节点的限制（table / list / select）？
 - [ ] 重试场景的旧节点 cleanup 是否覆盖了所有可能的插入位置？
-- [ ] 注入完后用 Playwright 在 github.com + news.ycombinator.com 双站回归
+- [ ] 注入完后用 Playwright 在 github.com + news.ycombinator.com + cerebras.ai 三站回归

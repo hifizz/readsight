@@ -108,21 +108,32 @@ const TRANSLATION_CLASS = 'readsight-translation';
 const BLOCK_ID_ATTR = 'data-eag-id';
 
 /**
- * 元素是否实际渲染（不被 display:none / 隐藏祖先遮蔽）。
+ * 元素是否实际渲染（不被 display:none / sr-only / 隐藏祖先遮蔽）。
  *
- * offsetParent === null 是经典 display:none 检测；offsetWidth/Height
- * 都为 0 抓位置类 display:none。<body> 自身 offsetParent 为 null 是特例，
- * 单独豁免。`<details>` 折叠态下子节点也会变 offsetParent=null，符合期望
- * （折叠态内容不可见，没必要翻译）。
+ * 三层判定：
+ *   1. `<body>` 是特例，直接返回 true（自身 offsetParent 为 null）
+ *   2. offsetParent === null → display:none / `<details>` 折叠态，跳过
+ *   3. rect 兜底 —— **width 和 height 都 > 1px** 才算可见
+ *
+ * 为什么是 ">1px" 而不是 ">0"：Tailwind 的 `sr-only` / Bootstrap 的
+ * `.visually-hidden` 会把无障碍跳转链接（"Skip to main content"）clip 到
+ * 1×1 px，position:absolute 移出视口。offsetParent 非空、rect 也有 1px，
+ * 看起来"已渲染"，但实际上视觉不可见。这种元素被收进 walker 后果严重 ——
+ * cerebras.ai 上 `<a class="sr-only">Skip to main content</a>` 直挂在
+ * 9100px 高的 `DIV.min-h-screen` 下面，A 不是 block-tag，walker 往上找到
+ * 这个外层 DIV 当 unit，整页正文都被它"祖先覆盖"过滤掉，只剩 footer 能翻。
  *
  * 注意：本函数会触发 layout，所以仅在抽取阶段（不频繁）调用。
  */
 function isRendered(el: HTMLElement): boolean {
   if (el === document.body) return true;
-  if (el.offsetParent !== null) return true;
-  // offsetParent 为 null 时仍可能是 fixed/positioned 可见元素，用 rect 兜底
+  if (el.offsetParent === null) {
+    // fixed/positioned 可见元素 offsetParent 也可能为 null，用 rect 兜底
+    const r = el.getBoundingClientRect();
+    return r.width > 1 && r.height > 1;
+  }
   const r = el.getBoundingClientRect();
-  return r.width > 0 || r.height > 0;
+  return r.width > 1 && r.height > 1;
 }
 
 /** 找文章正文容器，找不到 fallback 到 body */
