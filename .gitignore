@@ -26,8 +26,7 @@ server/.turbo
 server/out
 server/coverage
 
-# Drizzle local artifacts
-server/drizzle/meta
+# Drizzle: meta/_journal.json + snapshots 必须提交，drizzle-orm migrate() 运行时要读
 
 # Local data (ECDICT sqlite ~100MB, etc) — not committed; bootstrap via scripts/build-ecdict.ts
 server/data/
