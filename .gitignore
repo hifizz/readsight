@@ -42,3 +42,6 @@ server/data/
 *.sln
 *.sw?
 .gstack/
+
+# 部署敏感信息（密码 / 连接串）——不提交
+docs/*.secrets.md
