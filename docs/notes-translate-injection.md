@@ -99,6 +99,24 @@
 
 ---
 
+## UX 坑 1：`auto: 'never'` 静默隐藏 FAB，用户无从恢复
+
+**触发场景：** 用户在某站（典型：x.com / 任一复杂 WebApp）点过 FAB 菜单里的「从不在此站翻译」。
+
+**现象：** FAB 直接消失，下次进同域名仍然没有 FAB。用户记不起来自己点过这个开关，会反过来觉得"扩展挂了 / 不支持这个站"。
+
+**根因：** `translate.tsx` 的 `TranslateFab` 在 `rule?.auto === 'never'` 时直接不渲染（line 1298）。`'never'` 写进 `chrome.storage.sync` 的 `readsight:domain-rules`，跨设备同步、跨 tab 持续生效。唯一恢复路径是右键菜单「重置本站翻译规则 (见微)」—— 但用户的第一直觉是去找 FAB 上的开关，不会想到右键。
+
+**当前规避：** 右键菜单 + Console `chrome.storage.sync.set({'readsight:domain-rules': {}})`。
+
+**未来要改：** never 状态下保留一个超低调可恢复入口，让用户能"看见自己关掉了"。两个候选：
+1. 角标：5×5px 半透明灰点，hover 才显形，文案"本站已禁用，点击恢复"
+2. sidepanel：加「已禁用站点」列表，one-click 解禁
+
+**经验：** 任何"静默隐藏自己"的功能都必须留一个用户能发现的恢复入口。隐藏得越彻底，用户越觉得是"产品坏了"而不是"自己关了"。
+
+---
+
 ## 综合 checklist —— 改抽取 / 注入逻辑时过一遍
 
 - [ ] 抽 text 的递归是否排除了 `script / style / noscript / template`？
