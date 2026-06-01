@@ -79,6 +79,8 @@ coolify deploy uuid lu2vcbh5j26vj9mn11wdh7n8
 4. **别走 DB 公网端口做迁移**。开 is-public 后那个 TCP 端口被 Traefik TLS-SNI 接管，普通 pg 客户端从本地连会 `CONNECT_TIMEOUT`。迁移一律靠容器内自动跑。
 5. **Cloudflare 那条 DNS 用灰云（仅 DNS）**。橙云代理会卡 Let's Encrypt HTTP-01 签证书，也可能缓冲流式响应。
 6. **Next 16 需要 Node 20+**。已通过 env `NIXPACKS_NODE_VERSION=22` 解决（在 server/.env.production 里）。
+7. **native 模块要进 `onlyBuiltDependencies`**。pnpm 10/11 默认不跑依赖的 install/postinstall，`better-sqlite3` 的 `.node` 二进制就不会装，容器里报 `Could not locate the bindings file`、ECDICT 降级。已在 `server/pnpm-workspace.yaml` 把 `better-sqlite3` 加进 `onlyBuiltDependencies`。以后再加 native 依赖同理。
+8. **生产必须发 CORS 头**。`next.config.ts` 早期 `!isDev` 时 `headers()` 返回 `[]`，导致 `chrome-extension://` 的 sidepanel fetch `/api/*` 报 `No Access-Control-Allow-Origin`。已改成 dev/prod 都发 `ACAO`（默认 `*`，可用 env `CORS_ALLOW_ORIGIN` 覆盖收紧）。
 
 ## 7. 扩展指向生产后端
 
@@ -92,3 +94,30 @@ WXT_BACKEND_URL=https://readsight-api.zilin.im pnpm build
 ## 8. 首次部署做了什么（存档，正常不用重做）
 
 `coolify project create` → `coolify database create postgresql`（专用库）→ `coolify app create github`（私有库 + base-directory `/server` + nixpacks + ports 4010 + 域名）→ `coolify app env sync`（含 `NIXPACKS_NODE_VERSION=22`）→ 设 start-command `pnpm db:migrate && pnpm start` → push 触发部署。详见 git 历史 commit `89913fb`…`00892a5` 一段。
+
+## 9. ECDICT 离线词典（bind-mount，构建不带 100MB）
+
+`/api/lookup` 用 `server/data/ecdict.sqlite`（100MB，77万词，表 `dict`，sha256 `265a13c7…`）走 cache→ecdict→free-dict→llm。文件 gitignore、不进镜像；用宿主机目录 bind-mount 到容器、跨部署保留。
+
+**首次灌入（已做）**：
+```bash
+# ① 本地 scp 到 VPS 宿主机（登录用户 ubuntu，有 sudo）
+ssh ubuntu@43.156.59.202 'sudo mkdir -p /opt/readsight/data && sudo chown ubuntu:ubuntu /opt/readsight/data'
+scp -C server/data/ecdict.sqlite ubuntu@43.156.59.202:/opt/readsight/data/ecdict.sqlite
+# ② 给 app 加 bind-mount（宿主机 /opt/readsight/data ←→ 容器 /app/data）
+coolify app storage create lu2vcbh5j26vj9mn11wdh7n8 \
+  --type persistent --name ecdict-data \
+  --host-path /opt/readsight/data --mount-path /app/data
+# ③ 重新部署生效
+coolify deploy uuid lu2vcbh5j26vj9mn11wdh7n8
+```
+`ecdict.ts` 路径优先级 `ECDICT_PATH` → `cwd/data` → `cwd/server/data`；容器 cwd=`/app`，所以挂到 `/app/data` 即被自动发现，**无需 env、无需改代码**。
+
+**验证**：用没查过的生僻词（避开缓存），`source` 应为 `ecdict`：
+```bash
+curl -s 'https://readsight-api.zilin.im/api/lookup?word=perspicacious' | python3 -m json.tool
+# source=ecdict，extras 带 tag/collins/bnc；日志 `[ecdict] opened /app/data/ecdict.sqlite`
+```
+注意：之前查过的词命中 `dictionary_entries` 缓存（cache 优先于 ecdict），会显示 `source=cache`，正常。
+
+**更新词典**：scp 覆盖 `/opt/readsight/data/ecdict.sqlite` → 重启/重部署（ecdict 是只读单例，重启才重新打开）。**换新 VPS** 需重新 scp + 重建 storage。
