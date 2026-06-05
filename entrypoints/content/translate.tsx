@@ -33,6 +33,7 @@ import {
   isSamePrimary,
   languageLabelZh,
 } from '@/lib/page-language';
+import { getSettings, resolveLangBehavior } from '@/lib/settings';
 
 const BLOCK_SELECTOR = 'p, li, blockquote, h1, h2, h3, h4, h5, h6, dd';
 /** 文章正文容器选择器 —— h1 / 内嵌 header 在这种容器内才豁免外部过滤 */
@@ -1072,40 +1073,13 @@ async function refreshPageLangDetection(): Promise<DetectionResult> {
   return result;
 }
 
-// --- 首次外语页询问 banner 状态 ------------------------------------------
-//
-// "一次性"的语义：每个 content script 生命周期内最多弹一次。SPA 跳转不重置；
-// 只有 full page reload 才会让 banner 有机会再出。
-//
-// 谁会写 promptDismissed：
-//   - 用户在 banner 上点了任一动作（含 X）
-//   - 用户从其它路径触发了翻译（FAB 手动点 / always 规则触发）
-let promptDismissed = false;
-const promptListeners = new Set<() => void>();
-
-function setPromptDismissed(v: boolean): void {
-  if (promptDismissed === v) return;
-  promptDismissed = v;
-  for (const cb of promptListeners) cb();
-}
-function subscribePromptDismissed(cb: () => void): () => void {
-  promptListeners.add(cb);
-  return () => {
-    promptListeners.delete(cb);
-  };
-}
-function getPromptDismissed(): boolean {
-  return promptDismissed;
-}
-
 // --- "从不"动作的撤销窗口 ------------------------------------------------
 //
-// 用户在 banner 或 ModeMenu 上点"从不"后，FAB 会消失 —— 用户突然失去所有
-// 入口，体验是"我点错了怎么办"。这里在 5s 内显示一条"已禁用 · 撤销 · 右键菜单可恢复"
-// 提示，给一个一键回滚 + 一个长期恢复路径提示。
+// 用户在 ModeMenu 上点"从不"后，当前页若正在翻译会被停掉 —— 给一个 5s 撤销窗口
+// 兜底，避免"我点错了怎么办"。注：FAB 本身在 never 下仍渲染（muted），不再消失，
+// 所以长期恢复入口一直在；这条 confirm 主要是即时反悔用。
 //
-// 模块级状态：任何 UI 入口（banner / ModeMenu）写"从不"都走同一个 trigger，
-// confirm banner 单例显示。
+// 模块级状态：任何 UI 入口写"从不"都走同一个 trigger，confirm banner 单例显示。
 let neverConfirmState: { until: number } | null = null;
 let neverConfirmTimer: ReturnType<typeof setTimeout> | null = null;
 const neverConfirmListeners = new Set<() => void>();
@@ -1133,9 +1107,6 @@ function triggerNeverWithConfirmation(hostname: string, mode: TranslateMode): vo
   neverConfirmTimer = setTimeout(() => {
     neverConfirmTimer = null;
     setNeverConfirmState(null);
-    // banner（如果当时还是 choosing 模式）也一并 dismiss，避免 confirm 消失后
-    // 重新展示 choosing —— 用户的选择已经做出，不该再回到决策态
-    setPromptDismissed(true);
   }, NEVER_CONFIRM_TTL_MS);
 }
 
@@ -1146,7 +1117,6 @@ function undoNever(hostname: string): void {
     neverConfirmTimer = null;
   }
   setNeverConfirmState(null);
-  // 不重置 promptDismissed —— 让 banner 是否再显示完全由 shouldShowPrompt 重新判定
 }
 
 /**
@@ -1243,16 +1213,11 @@ export function TranslateFab() {
     installHistoryHooksOnce();
   }, [rule]);
 
-  // 订阅页面语言检测结果 + 首次询问 banner 的 dismissed 状态
+  // 订阅页面语言检测结果
   const pageLangDetection = useSyncExternalStore(
     subscribePageLangDetection,
     getCurrentPageLangDetection,
     getCurrentPageLangDetection,
-  );
-  const promptDismissedState = useSyncExternalStore(
-    subscribePromptDismissed,
-    getPromptDismissed,
-    getPromptDismissed,
   );
   const neverConfirm = useSyncExternalStore(
     subscribeNeverConfirm,
@@ -1260,41 +1225,56 @@ export function TranslateFab() {
     getNeverConfirmState,
   );
 
-  // 一律在 mount 时跑一次检测 —— 不管有没有 rule，banner 也需要这份结果
+  // 一律在 mount 时跑一次检测 —— 自动翻决策（域名规则 / 语言偏好）都要这份结果
   useEffect(() => {
     void refreshPageLangDetection();
   }, []);
 
-  // auto='always' 且检测到位 → 同语言跳过，否则翻译
-  // 用 ref 守门：用户后续手动撤销不会触发再翻译；只在初次"规则+检测都就绪"时跑一次
+  // 自动翻译决策（替代老的"仅 always 才翻"）。优先级：
+  //   1. 同语言 → 跳过（中文用户开中文页等）
+  //   2. 域名规则 never → 不翻（但 FAB 仍渲染）
+  //   3. 域名规则 always → 翻
+  //   4. 无域名规则 → 看全局语言偏好 langBehavior[检测语言]：auto 才翻
+  // 不再弹任何询问 banner —— 见 docs/PROJECT_STATUS.md 交互改版。
+  //
+  // 用 ref 守门只跑一次；langBehavior 在 effect 内 await getSettings() 取权威值，
+  // 避免 useSettings() 初渲染返回 DEFAULT(manual) 与真值的竞态误判。
   useEffect(() => {
     if (rule === 'loading') return;
-    if (rule?.auto !== 'always') return;
     if (pageLangDetection === null) return; // 等检测完
     if (autoStartedRef.current) return;
-    autoStartedRef.current = true;
-    if (shouldSkipForSameLanguage(pageLangDetection)) {
-      console.log(
-        `[readsight] auto-translate skipped: page lang ${pageLangDetection.lang} matches user`,
-      );
-      return;
-    }
-    if (moduleState.status === 'idle') {
-      togglePageTranslation(rule.mode);
-    }
-  }, [rule, pageLangDetection]);
+    autoStartedRef.current = true; // 进入即占用，防 await 期间依赖变化重入
 
-  // 翻译被触发（任何路径）→ banner 自动消失
-  useEffect(() => {
-    if (s.status === 'active' && !promptDismissedState) {
-      setPromptDismissed(true);
-    }
-  }, [s.status, promptDismissedState]);
+    void (async () => {
+      if (shouldSkipForSameLanguage(pageLangDetection)) {
+        console.log(
+          `[readsight] auto-translate skipped: page lang ${pageLangDetection.lang} matches user`,
+        );
+        return;
+      }
+      if (rule?.auto === 'never') return;
+
+      let shouldAuto = rule?.auto === 'always';
+      if (rule === null) {
+        const settings = await getSettings();
+        const behavior = resolveLangBehavior(settings, pageLangDetection.lang);
+        shouldAuto = behavior === 'auto';
+        console.log(
+          `[readsight] no domain rule; lang=${pageLangDetection.lang} behavior=${behavior}`,
+        );
+      }
+
+      if (shouldAuto && moduleState.status === 'idle') {
+        // always 规则带自己的 mode；语言偏好触发默认 'page'
+        togglePageTranslation(rule?.auto === 'always' ? rule.mode : 'page');
+      }
+    })();
+  }, [rule, pageLangDetection]);
 
   // loading 阶段：什么都不渲染（避免闪烁）
   if (rule === 'loading') return null;
-  // never 模式：FAB 不渲染，但 NeverConfirm banner 仍可能出现（用户刚刚点完"从不"）
-  // 用 isNever 而非 early return；下面的 fragment 会根据它条件渲染 FAB
+  // never 模式：FAB 仍渲染（muted），让用户能从菜单切回 —— 不再像老版本那样
+  // 隐藏 FAB 把用户困在死胡同（见 docs/notes-translate-injection.md UX坑1）。
   const isNever = rule?.auto === 'never';
 
   function onClick(e: React.MouseEvent) {
@@ -1307,13 +1287,13 @@ export function TranslateFab() {
     // FAB 主按钮默认走"翻译全页"——对现代 React 站点 / 复杂版面更稳；
     // 想要严格的"正文"模式仍可从菜单显式选择。
     //
-    // idle→active 时顺手写一条 always 域名规则："点击翻译即记住"
-    // 下次进同站自动翻。撤销路径不触碰规则（防止"只是本次想看原文"被
-    // 永久取消订阅）。已有 always 规则就保持；rule=never 时 FAB 根本不渲染，
-    // 不会走到这。
+    // idle→active 时顺手写一条 always 域名规则："点击翻译即记住"下次进同站自动翻。
+    // 撤销路径不触碰规则（防止"只是本次想看原文"被永久取消订阅）。
+    // 例外：rule=never（muted FAB）时只翻本次、不覆盖用户显式设的"从不"——
+    // 想长期恢复请走菜单切回 session/always。
     const willActivate = moduleState.status === 'idle';
     togglePageTranslation('page');
-    if (willActivate) {
+    if (willActivate && !isNever) {
       void setDomainRule(hostname, { auto: 'always', mode: 'page' });
     }
   }
@@ -1372,73 +1352,27 @@ export function TranslateFab() {
       ? `本页${languageLabelZh(pageLangDetection?.lang ?? null)}，已跳过`
       : null;
 
-  // === 首次外语页询问 banner 显示条件 ===
-  // 全部条件:
-  //   - status idle（翻译没在跑）
-  //   - 该域名无规则（rule===null；'always'/'never' 都不弹）
-  //   - 本会话还没弹过 / 没被 dismiss
-  //   - menuOpen=false（不和 ModeMenu 抢同一锚点）
-  //   - neverConfirm 没在显示（不和"已禁用"提示共存）
-  //   - 用户主语言 === 'zh'：当前翻译器输出固定 zh，非中文用户弹了也没意义
-  //   - 检测可信源（CLD3）：避免 <html lang> 噪音导致误弹
-  //   - 检测出的 lang 跟用户语言不同
-  const userIsZh = getUserPrimaryLang() === 'zh';
-  const shouldShowPrompt =
-    s.status === 'idle' &&
-    rule === null &&
-    !promptDismissedState &&
-    !menuOpen &&
-    neverConfirm === null &&
-    userIsZh &&
-    pageLangDetection?.source === 'cld3' &&
-    !!pageLangDetection.lang &&
-    !isSamePrimary(pageLangDetection.lang, getUserPrimaryLang());
-
-  function onPromptAlways() {
-    void setDomainRule(hostname, { auto: 'always', mode: effectiveMode });
-    togglePageTranslation(effectiveMode);
-    setPromptDismissed(true);
-  }
-  function onPromptJustOnce() {
-    togglePageTranslation(effectiveMode);
-    setPromptDismissed(true);
-  }
-  function onPromptNever() {
-    // 同样走撤销窗口；setPromptDismissed 由 confirm 计时器到期时统一设置
-    triggerNeverWithConfirmation(hostname, effectiveMode);
-  }
-  function onPromptClose() {
-    setPromptDismissed(true);
-  }
-
   return (
     <>
-      {!isNever && (
-        <FabButton
-          status={s.status}
-          positionStyle={drag.positionStyle()}
-          menuOpen={menuOpen}
-          onMouseDown={drag.onMouseDown}
-          onClick={onClick}
-          onChevronClick={(e) => {
-            e.stopPropagation();
-            setMenuOpen((o) => !o);
-          }}
-          onCloseMenu={() => setMenuOpen(false)}
-          onPickMode={onClickMode}
-          hostname={hostname}
-          ruleKind={ruleKind}
-          effectiveMode={effectiveMode}
-          pageLangHint={pageLangHint}
-          onChangeRule={onChangeRule}
-          promptVisible={shouldShowPrompt}
-          promptLangLabel={languageLabelZh(pageLangDetection?.lang ?? null)}
-          onPromptAlways={onPromptAlways}
-          onPromptJustOnce={onPromptJustOnce}
-          onPromptNever={onPromptNever}
-          onPromptClose={onPromptClose}
-        />
-      )}
+      <FabButton
+        status={s.status}
+        positionStyle={drag.positionStyle()}
+        menuOpen={menuOpen}
+        muted={isNever}
+        onMouseDown={drag.onMouseDown}
+        onClick={onClick}
+        onChevronClick={(e) => {
+          e.stopPropagation();
+          setMenuOpen((o) => !o);
+        }}
+        onCloseMenu={() => setMenuOpen(false)}
+        onPickMode={onClickMode}
+        hostname={hostname}
+        ruleKind={ruleKind}
+        effectiveMode={effectiveMode}
+        pageLangHint={pageLangHint}
+        onChangeRule={onChangeRule}
+      />
       {neverConfirm && (
         <NeverConfirmBanner
           hostname={hostname}
@@ -1453,6 +1387,7 @@ function FabButton({
   status,
   positionStyle,
   menuOpen,
+  muted,
   onMouseDown,
   onClick,
   onChevronClick,
@@ -1463,16 +1398,12 @@ function FabButton({
   effectiveMode,
   pageLangHint,
   onChangeRule,
-  promptVisible,
-  promptLangLabel,
-  onPromptAlways,
-  onPromptJustOnce,
-  onPromptNever,
-  onPromptClose,
 }: {
   status: FabStatus;
   positionStyle: Record<string, number>;
   menuOpen: boolean;
+  /** never 规则下 FAB 仍渲染，但降低视觉存在感（半透明 + 浅色），提示"此站已关" */
+  muted: boolean;
   onMouseDown: (e: React.MouseEvent) => void;
   onClick: (e: React.MouseEvent) => void;
   onChevronClick: (e: React.MouseEvent) => void;
@@ -1484,13 +1415,6 @@ function FabButton({
   /** "always 规则下检测到同语言"时的 hint 文案；其它情况 null */
   pageLangHint: string | null;
   onChangeRule: (next: 'always' | 'session' | 'never') => void;
-  /** 首次外语页询问 banner 可见性与回调 */
-  promptVisible: boolean;
-  promptLangLabel: string;
-  onPromptAlways: () => void;
-  onPromptJustOnce: () => void;
-  onPromptNever: () => void;
-  onPromptClose: () => void;
 }) {
   // 不显示进度数字 —— 用户反馈"没必要给用户看到"
   const label = status === 'active' ? '撤销翻译' : '翻译';
@@ -1504,6 +1428,15 @@ function FabButton({
         zIndex: 2147483647,
         display: 'inline-flex',
         alignItems: 'center',
+        // muted（never 站）：整体半透明、hover 才回到不透明，弱化存在感但不消失
+        opacity: muted ? 0.45 : 1,
+        transition: 'opacity .15s ease',
+      }}
+      onMouseEnter={(e) => {
+        if (muted) (e.currentTarget as HTMLDivElement).style.opacity = '1';
+      }}
+      onMouseLeave={(e) => {
+        if (muted) (e.currentTarget as HTMLDivElement).style.opacity = '0.45';
       }}
     >
       {/* 下拉菜单 —— active 时也允许打开（用于改域名规则；模式切换仍只在 idle 显示） */}
@@ -1517,18 +1450,6 @@ function FabButton({
           effectiveMode={effectiveMode}
           pageLangHint={pageLangHint}
           onChangeRule={onChangeRule}
-        />
-      )}
-
-      {/* 首次外语页询问 banner —— 同样浮在 FAB 上方，与 menu 互斥（shouldShowPrompt 已 gate） */}
-      {promptVisible && (
-        <TranslatePrompt
-          hostname={hostname}
-          langLabel={promptLangLabel}
-          onAlways={onPromptAlways}
-          onJustOnce={onPromptJustOnce}
-          onNever={onPromptNever}
-          onClose={onPromptClose}
         />
       )}
 
@@ -1661,7 +1582,7 @@ function ModeMenu({
         (pageLangHint ? ` · ${pageLangHint}` : ''),
     },
     { kind: 'session', label: '仅本次', desc: '不记忆，下次需要手动点' },
-    { kind: 'never', label: '从不在此站翻译', desc: '隐藏 FAB，避开复杂 WebApp' },
+    { kind: 'never', label: '从不在此站翻译', desc: '不再自动翻；按钮淡出，随时可从这里恢复' },
   ];
 
   return (
@@ -1806,138 +1727,11 @@ const sectionLabelStyle: React.CSSProperties = {
 };
 
 /**
- * 首次外语页询问 banner —— Chrome 原生翻译条同款的产品形态，浮在 FAB 上方。
- *
- * 三个动作 + 关闭：
- *   - "总是翻译" → 写 always 规则 + 立刻翻译
- *   - "仅本次"   → 立刻翻译，不写规则
- *   - "从不"     → 写 never 规则（下次刷新连 FAB 都不出）
- *   - X         → 仅 dismiss（本 lifetime 不再弹）
- *
- * 用 data-attr `eag-prompt-root` 标记容器，给未来 outside-click 监听 / 调试用。
- */
-function TranslatePrompt({
-  hostname,
-  langLabel,
-  onAlways,
-  onJustOnce,
-  onNever,
-  onClose,
-}: {
-  hostname: string;
-  langLabel: string;
-  onAlways: () => void;
-  onJustOnce: () => void;
-  onNever: () => void;
-  onClose: () => void;
-}) {
-  return (
-    <div
-      data-eag-prompt-root="true"
-      style={{
-        position: 'absolute',
-        bottom: 'calc(100% + 8px)',
-        right: 0,
-        width: 300,
-        background: '#fff',
-        color: '#111',
-        fontFamily: 'system-ui, -apple-system, sans-serif',
-        fontSize: 13,
-        border: '1px solid rgba(0,0,0,0.08)',
-        borderRadius: 10,
-        boxShadow: '0 12px 32px rgba(0,0,0,0.18)',
-        animation: 'eag-prompt-in .18s cubic-bezier(.2,.8,.3,1.05) both',
-      }}
-    >
-      <style>{`@keyframes eag-prompt-in {
-        from { opacity: 0; transform: translateY(6px) scale(.97); }
-        to   { opacity: 1; transform: translateY(0) scale(1); }
-      }`}</style>
-      <button
-        type="button"
-        onClick={onClose}
-        aria-label="关闭"
-        style={{
-          position: 'absolute',
-          top: 6,
-          right: 6,
-          width: 22,
-          height: 22,
-          border: 'none',
-          background: 'transparent',
-          color: '#888',
-          cursor: 'pointer',
-          fontSize: 16,
-          lineHeight: 1,
-          padding: 0,
-        }}
-      >
-        ×
-      </button>
-      <div style={{ padding: '12px 14px 6px' }}>
-        <div style={{ fontSize: 13.5, fontWeight: 500 }}>
-          检测到这是<span style={{ color: '#0b8f5a' }}>{langLabel}</span>页面
-        </div>
-        <div style={{ fontSize: 11.5, color: '#666', marginTop: 4 }}>
-          要翻译 <span style={{ fontWeight: 500, color: '#333' }}>{hostname}</span> 吗？
-        </div>
-      </div>
-      <div style={{ display: 'flex', gap: 6, padding: '4px 10px 12px', flexWrap: 'wrap' }}>
-        <button
-          type="button"
-          onClick={onAlways}
-          style={{
-            flex: '1 1 auto',
-            minWidth: 88,
-            padding: '7px 10px',
-            background: '#111',
-            color: '#fff',
-            border: 'none',
-            borderRadius: 7,
-            fontSize: 12.5,
-            fontWeight: 500,
-            cursor: 'pointer',
-          }}
-        >
-          总是翻译
-        </button>
-        <button
-          type="button"
-          onClick={onJustOnce}
-          style={promptSecondaryBtnStyle}
-        >
-          仅本次
-        </button>
-        <button
-          type="button"
-          onClick={onNever}
-          style={promptSecondaryBtnStyle}
-        >
-          从不
-        </button>
-      </div>
-    </div>
-  );
-}
-
-const promptSecondaryBtnStyle: React.CSSProperties = {
-  flex: '1 1 auto',
-  minWidth: 64,
-  padding: '7px 10px',
-  background: '#fff',
-  color: '#333',
-  border: '1px solid rgba(0,0,0,0.12)',
-  borderRadius: 7,
-  fontSize: 12.5,
-  fontWeight: 500,
-  cursor: 'pointer',
-};
-
-/**
  * 用户刚刚把本站设为"从不翻译"后显示的临时确认条 —— 给一个 5s 撤销窗口
  * 和一条永久恢复路径（右键菜单），避免"我点错了怎么办"的死胡同。
  *
- * 独立浮在视口右下角；不依赖 FAB（FAB 此时已隐藏）。
+ * 独立浮在视口右下角。FAB 在 never 下仍以 muted 态渲染，长期恢复入口（菜单）一直在；
+ * 这条 confirm 是即时反悔的快捷兜底。
  */
 function NeverConfirmBanner({
   hostname,

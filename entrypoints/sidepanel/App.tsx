@@ -46,6 +46,7 @@ import { WordCard } from '@/components/word-card';
 import { ContextCard } from '@/components/context-card';
 import { SeedSuggestions } from '@/components/seed-suggestions';
 import { RecordsList, type HistoryRecord } from '@/components/records-list';
+import { SettingsPanel } from '@/components/settings-panel';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
@@ -53,7 +54,7 @@ const BACKEND = import.meta.env.WXT_BACKEND_URL ?? 'http://localhost:4010';
 const STORAGE_KEY_LATEST = 'readsight:latest-selection-id';
 const STORAGE_KEY_PREFIX = 'readsight:selection:';
 
-type TabKey = 'chat' | 'records';
+type TabKey = 'chat' | 'records' | 'settings';
 
 export default function App() {
   const [selection, setSelection] = useState<SelectionContext | null>(null);
@@ -131,6 +132,12 @@ export default function App() {
             >
               学习记录
             </Tab>
+            <Tab
+              active={activeTab === 'settings'}
+              onClick={() => setActiveTab('settings')}
+            >
+              设置
+            </Tab>
             <div className="flex-1" />
             <NewThreadButton
               onClick={async () => {
@@ -146,7 +153,7 @@ export default function App() {
           </div>
 
           {/* ── 主体 ── */}
-          {activeTab === 'chat' ? (
+          {activeTab === 'chat' && (
             <div className="flex min-h-0 flex-1 flex-col">
               {/* 语境卡：固定钉在 tab 下，不进滚动区 */}
               {selection && (
@@ -175,13 +182,19 @@ export default function App() {
                 />
               </div>
             </div>
-          ) : (
+          )}
+          {activeTab === 'records' && (
             <div className="min-h-0 flex-1 overflow-y-auto">
               <RecordsList
                 backendUrl={BACKEND}
                 onSelect={handleSelectRecord}
                 refreshToken={recordsRefreshToken}
               />
+            </div>
+          )}
+          {activeTab === 'settings' && (
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              <SettingsPanel />
             </div>
           )}
         </div>

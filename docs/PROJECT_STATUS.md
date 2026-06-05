@@ -156,6 +156,15 @@
 
 **共同模式**：内容寻址 cache，写入用 `onConflictDoNothing` 幂等，命中即秒回。文本不变 → 永远复用。
 
+### 3.13 外语检测交互改版：删询问 banner → 按语言偏好（靠近 Chrome）
+
+- **问题**：老版本每打开一个外语站都弹一个注入页面的 `TranslatePrompt` banner 让用户选。抑制标志 `promptDismissed` 是 per-page-load 的，换站 / 刷新就重置 → 每站都被问，很烦。
+- **对比 Chrome**：提示在浏览器边框（不侵入页面）、关几次降噪、**按语言**记忆（"永不/总是翻译英文"全局生效）、默认不自动翻只"提供"。我们的 FAB 本就等价于 Chrome 地址栏那个常驻翻译图标，banner 属于多余的第二重打扰。
+- **决策（用户拍板）**：① 默认 **完全安静** —— 检测到外语不弹任何东西，FAB 安静待命；**整块 banner + `promptDismissed` 机制删除**。② 新增 **按语言偏好** `langBehavior`（`lib/settings.ts`）：「英文 / 其他语言 → 自动翻 | 手动」，做一次决定全局生效。
+- **决策模型**（`TranslateFab` auto-start useEffect）：同语言跳过 → 域名规则 `never` 不翻（FAB 仍渲染）→ 域名规则 `always` 翻 → 无域名规则则看 `langBehavior[检测语言]`，`auto` 才翻。**域名规则优先级高于语言偏好**。`langBehavior` 在 effect 内 `await getSettings()` 取权威值，避开 `useSettings()` 初渲染 DEFAULT 竞态。
+- **顺带修**：never 不再隐藏 FAB（见 `notes-translate-injection.md` UX坑1），muted 态保留恢复入口。
+- **默认值**：所有语言含英文默认 `manual`（精读工具，默认全自动翻与精读相悖；零打扰、零意外）。
+
 ---
 
 ## 四、技术栈快照

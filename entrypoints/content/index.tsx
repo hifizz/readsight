@@ -20,6 +20,7 @@ import { TranslateFab, togglePageTranslation, onTranslateStateChange } from './t
 import { ImmersiveReader } from './immersive-reader';
 import { SelectionPopup, openPopup, useIsPopupOpen } from './popup';
 import { clearDomainRule } from '@/lib/domain-rules';
+import { useSettings } from '@/lib/settings';
 
 const BACKEND = import.meta.env.WXT_BACKEND_URL ?? 'http://localhost:4010';
 const KNOWN_ITEMS_KEY = 'readsight:known-items';
@@ -55,7 +56,7 @@ export default defineContentScript({
         // 由 popup 自己的 useSyncExternalStore 决定是否显示
         root.render(
           <>
-            <SelectionPill />
+            <SelectionIndicator />
             <SelectionPopup />
           </>,
         );
@@ -304,22 +305,24 @@ async function fetchKnownLemmas(): Promise<Set<string>> {
   }
 }
 
-/**
- * Pill 组件：监听 mouseup / selectionchange，抓选区，渲染浮窗按钮。
- *
- * 注意：所有"抓选区"逻辑放在 effect 里同步跑（PRD §8.2 命门三），把结果 setState 进
- * `snapshot`；后续 pill 自己的 onClick 不会再去读 window.getSelection()。
- */
-function SelectionPill() {
-  const [snapshot, setSnapshot] = useState<{
-    ctx: SelectionContext;
-    rect: DOMRect;  // 选区的视口坐标，用于定位 pill
-    /** 选区所在容器的真实底色判定。null = 采样不到（透明栈到底），交给 CSS prefers-color-scheme 兜底。 */
-    bgScheme: 'light' | 'dark' | null;
-  } | null>(null);
-  // popup 打开时 pill 隐藏 —— 用模块级 popup state 订阅，避免本地兄弟组件状态不同步
-  const popupOpen = useIsPopupOpen();
+interface SelectionSnapshot {
+  ctx: SelectionContext;
+  rect: DOMRect; // 选区的视口坐标，用于定位指示器
+  /** 选区所在容器的真实底色判定。null = 采样不到（透明栈到底），交给 CSS prefers-color-scheme 兜底。 */
+  bgScheme: 'light' | 'dark' | null;
+}
 
+/**
+ * 选区监听 hook：mouseup / selectionchange 抓选区，返回 snapshot + clear。
+ *
+ * 所有"抓选区"逻辑都在 effect 里同步跑（PRD §8.2 命门三），结果存进 state；
+ * 后续点击不会再去读 window.getSelection()（自身被点击会清掉 selection）。
+ */
+function useSelectionSnapshot(): {
+  snapshot: SelectionSnapshot | null;
+  clear: () => void;
+} {
+  const [snapshot, setSnapshot] = useState<SelectionSnapshot | null>(null);
   useEffect(() => {
     function onMouseUp() {
       // rAF 让浏览器先把 selection 算稳定 —— 直接在 mouseup 同步读 selection
@@ -352,7 +355,7 @@ function SelectionPill() {
       });
     }
     function onSelectionChange() {
-      // 用户清掉选区时同步隐藏 pill。注意只清不重抓 —— 重抓走 mouseup。
+      // 用户清掉选区时同步隐藏指示器。注意只清不重抓 —— 重抓走 mouseup。
       const sel = window.getSelection();
       if (!sel || sel.isCollapsed) setSnapshot(null);
     }
@@ -363,11 +366,46 @@ function SelectionPill() {
       document.removeEventListener('selectionchange', onSelectionChange);
     };
   }, []);
+  return { snapshot, clear: () => setSnapshot(null) };
+}
 
-  // popup 已开 = 不显示 pill（避免两者并存的视觉混乱）
-  if (popupOpen || !snapshot) return null;
-
+/** 选区指示器点击 → 开词典 popup 的统一处理。dot 和 pill 共用。 */
+function handleIndicatorClick(snapshot: SelectionSnapshot, clear: () => void) {
   const { ctx, rect } = snapshot;
+  try {
+    if (ctx.selection.type === 'word') {
+      activelyQueriedLemmas.add(resolveLemma(ctx.selection.text));
+    }
+  } catch (err) {
+    console.warn('[readsight] resolveLemma in indicator click threw', err);
+  }
+  openPopup(ctx, {
+    rect: {
+      top: rect.top,
+      left: rect.left,
+      right: rect.right,
+      bottom: rect.bottom,
+    },
+  });
+  clear();
+}
+
+/**
+ * 划词指示器入口 —— 按 settings.selectionIndicator 选 dot / pill 渲染。
+ * 默认 dot：选区右上角一颗带 halo 的小圆点，干扰最小。
+ * pill 是老视觉，留作可选。
+ */
+function SelectionIndicator() {
+  const { selectionIndicator } = useSettings();
+  return selectionIndicator === 'pill' ? <SelectionPill /> : <SelectionDot />;
+}
+
+/** 老版 pill —— 选区上方居中"Look up"按钮 */
+function SelectionPill() {
+  const { snapshot, clear } = useSelectionSnapshot();
+  const popupOpen = useIsPopupOpen();
+  if (popupOpen || !snapshot) return null;
+  const { rect } = snapshot;
   // 视觉规则（来自 docs/lookup.jsx）：pill 居中浮在选区上方，44px gap，
   // 视口边缘留 60px 安全区防贴边。translateX(-50%) 把 left 当中点用。
   const vw = window.innerWidth;
@@ -381,35 +419,60 @@ function SelectionPill() {
         type="button"
         className="eag-pill"
         data-bg={snapshot.bgScheme ?? undefined}
-        // mousedown 默认会让浏览器清掉当前 selection；阻止它，click 仍能正常触发。
         onMouseDown={(e) => {
           e.preventDefault();
           e.stopPropagation();
         }}
-        onClick={() => {
-          try {
-            if (ctx.selection.type === 'word') {
-              activelyQueriedLemmas.add(resolveLemma(ctx.selection.text));
-            }
-          } catch (err) {
-            console.warn('[readsight] resolveLemma in pill click threw', err);
-          }
-          openPopup(ctx, {
-            rect: {
-              top: rect.top,
-              left: rect.left,
-              right: rect.right,
-              bottom: rect.bottom,
-            },
-          });
-          setSnapshot(null);
-        }}
+        onClick={() => handleIndicatorClick(snapshot, clear)}
         aria-label="Look up with Readsight"
         title="Look up"
         style={{ top, left }}
       >
         <Sparkles size={13} strokeWidth={2.25} className="eag-pill-icon" />
         Look up
+      </button>
+    </>
+  );
+}
+
+/**
+ * 圆点指示器 —— 选区右上角浮一颗干净的小圆点，无 halo。
+ *
+ * 视觉规则：
+ *   - 整体方框 28×28px 是透明命中区；中心实心圆点 8px 才是唯一可见体
+ *   - 圆心锚定在选区 rect 右上角再往外偏 4px（top: rect.top - 14 - 4, left: rect.right - 14 + 4）
+ *   - hover 只放大圆点本身（scale 1.35），命中区不变
+ *   - 配色复用 pill 的 bg-scheme 自适应（深底白点 / 浅底黑点）
+ *   - 视口边缘留 8px 安全区
+ */
+function SelectionDot() {
+  const { snapshot, clear } = useSelectionSnapshot();
+  const popupOpen = useIsPopupOpen();
+  if (popupOpen || !snapshot) return null;
+  const { rect } = snapshot;
+  const SIZE = 28;
+  const OFFSET = 4; // 往选区外侧推一点，避开文字
+  const vw = window.innerWidth;
+  const left = Math.min(Math.max(rect.right - SIZE / 2 + OFFSET, 8), vw - SIZE - 8);
+  const top = Math.max(rect.top - SIZE / 2 - OFFSET, 8);
+
+  return (
+    <>
+      <style>{DOT_CSS}</style>
+      <button
+        type="button"
+        className="eag-dot"
+        data-bg={snapshot.bgScheme ?? undefined}
+        onMouseDown={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        }}
+        onClick={() => handleIndicatorClick(snapshot, clear)}
+        aria-label="Look up with Readsight"
+        title="Look up"
+        style={{ top, left, width: SIZE, height: SIZE }}
+      >
+        <span className="eag-dot-core" />
       </button>
     </>
   );
@@ -500,6 +563,81 @@ const PILL_CSS = `
 @keyframes eag-pill-in {
   from { opacity: 0; transform: translateX(-50%) translateY(5px) scale(.92); }
   to   { opacity: 1; transform: translateX(-50%) translateY(0)   scale(1);   }
+}
+`;
+
+/**
+ * Dot 指示器 CSS —— 干净小圆点，无 halo。
+ *
+ * 双层结构（用同一个 button 元素 + 子 span 拆开）：
+ *   - button 整体：透明背景，纯命中区，hover 不画任何东西
+ *   - 内部 .eag-dot-core：8px 实心圆，唯一可见主体，hover 时只放大它自己
+ *
+ * 配色复用 pill 那一套 data-bg 自适应：深底页面 → 白点，浅底页面 → 黑点。
+ */
+const DOT_CSS = `
+.eag-dot {
+  /* 默认色板：深色点适配浅色宿主页 */
+  --eag-dot-core: #101012;
+
+  position: fixed;
+  z-index: 2147483646;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  /* 整个 28px 方框是透明命中区，只放大 hover 热区，不画任何 halo */
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  animation: eag-dot-in .18s cubic-bezier(.2, .8, .3, 1.1) both;
+  transition: transform .15s ease;
+  -webkit-font-smoothing: antialiased;
+}
+/* hover 只放大可见圆点本身，命中区始终是透明 28px */
+.eag-dot:hover .eag-dot-core { transform: scale(1.35); }
+.eag-dot:active .eag-dot-core { transform: scale(.92); }
+
+.eag-dot-core {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--eag-dot-core);
+  box-shadow:
+    0 1px 2px rgba(16, 16, 18, .35),
+    0 0 0 1px rgba(255, 255, 255, .08) inset;
+  flex: none;
+  transition: transform .15s ease;
+}
+
+/* OS 暗色 → 翻成白点白 halo */
+@media (prefers-color-scheme: dark) {
+  .eag-dot:not([data-bg="light"]) {
+    --eag-dot-core: #ffffff;
+  }
+  .eag-dot:not([data-bg="light"]) .eag-dot-core {
+    box-shadow:
+      0 1px 2px rgba(0, 0, 0, .5),
+      0 0 0 1px rgba(0, 0, 0, .12) inset;
+  }
+}
+/* JS 采样宿主真实底色，优先级最高 */
+.eag-dot[data-bg="dark"] {
+  --eag-dot-core: #ffffff;
+}
+.eag-dot[data-bg="dark"] .eag-dot-core {
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, .5),
+    0 0 0 1px rgba(0, 0, 0, .12) inset;
+}
+.eag-dot[data-bg="light"] {
+  --eag-dot-core: #101012;
+}
+
+@keyframes eag-dot-in {
+  from { opacity: 0; transform: scale(.6); }
+  to   { opacity: 1; transform: scale(1); }
 }
 `;
 
