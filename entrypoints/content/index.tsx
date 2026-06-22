@@ -41,9 +41,9 @@ export default defineContentScript({
   // 关键：WXT 把 CSS 注入到 shadow root 而不是宿主页面，做到样式互不污染（PRD §10）。
   cssInjectionMode: 'ui',
   async main(ctx) {
-    const ui = await createShadowRootUi(ctx, {
+    // 选区指示器（pill / dot）—— 独立 Shadow DOM，先 mount
+    const indicatorUi = await createShadowRootUi(ctx, {
       name: 'readsight-pill',
-      // overlay 模式 + 巨大 z-index：保证 pill 浮在宿主页面的导航 / sticky / 弹窗之上。
       position: 'overlay',
       alignment: 'top-left',
       zIndex: 2147483647,
@@ -52,27 +52,19 @@ export default defineContentScript({
         const host = document.createElement('div');
         container.append(host);
         const root = ReactDOM.createRoot(host);
-        // pill 和 popup 同一个 Shadow DOM，z-index / 样式一致；
-        // 由 popup 自己的 useSyncExternalStore 决定是否显示
-        root.render(
-          <>
-            <SelectionIndicator />
-            <SelectionPopup />
-          </>,
-        );
+        root.render(<SelectionIndicator />);
         return root;
       },
       onRemove: (root) => root?.unmount(),
     });
-    ui.mount();
+    indicatorUi.mount();
+    fixShadowHostStacking('readsight-pill');
 
     // 全文翻译浮动按钮（M3 PRD §7.1）—— 独立 Shadow DOM，与 pill 状态解耦
     const fabUi = await createShadowRootUi(ctx, {
       name: 'readsight-fab',
       position: 'overlay',
       alignment: 'bottom-right',
-      // 32-bit int 上限，跟很多站点同优先级时按 DOM 顺序决出胜负；
-      // shadowHost append 较早，但因为是 body 子节点，多数情况能压住。
       zIndex: 2147483647,
       anchor: 'body',
       onMount: (container) => {
@@ -85,13 +77,13 @@ export default defineContentScript({
       onRemove: (root) => root?.unmount(),
     });
     fabUi.mount();
+    fixShadowHostStacking('readsight-fab');
 
     // 沉浸式对照阅读（FAB 菜单"对照阅读"打开）—— 独立 Shadow DOM，蒙层全屏
     // 时不影响 FAB 状态机。监听 window 'eag:open-immersive' 事件触发显示。
     const immersiveUi = await createShadowRootUi(ctx, {
       name: 'readsight-immersive',
       position: 'overlay',
-      // alignment 对 fixed 定位的蒙层不重要 —— host 元素只是挂载点，内部用 position:fixed
       alignment: 'top-left',
       zIndex: 2147483647,
       anchor: 'body',
@@ -105,6 +97,27 @@ export default defineContentScript({
       onRemove: (root) => root?.unmount(),
     });
     immersiveUi.mount();
+    fixShadowHostStacking('readsight-immersive');
+
+    // 划词查询 Dialog —— 独立 Shadow DOM，最后 mount 保证同 z-index 下 DOM 顺序最靠后，
+    // 始终压在 indicator / fab / immersive 之上，不被任何宿主元素遮挡。
+    const popupUi = await createShadowRootUi(ctx, {
+      name: 'readsight-popup',
+      position: 'overlay',
+      alignment: 'top-left',
+      zIndex: 2147483647,
+      anchor: 'body',
+      onMount: (container) => {
+        const host = document.createElement('div');
+        container.append(host);
+        const root = ReactDOM.createRoot(host);
+        root.render(<SelectionPopup />);
+        return root;
+      },
+      onRemove: (root) => root?.unmount(),
+    });
+    popupUi.mount();
+    fixShadowHostStacking('readsight-popup');
 
     // 把翻译状态变化通知 background，让右键菜单标题动态更新
     onTranslateStateChange((status) => {
@@ -140,6 +153,24 @@ export default defineContentScript({
     });
   },
 });
+
+/**
+ * WXT overlay shadow host 默认 position: relative，部分站点 CSS 会把它覆盖成 static，
+ * 导致 z-index 失效、宿主页面高层级元素遮住 dialog。
+ * mount 后立即用 setProperty(..., 'important') 强制 position: fixed，
+ * 建立独立的 stacking context，不受宿主样式影响。
+ */
+function fixShadowHostStacking(name: string): void {
+  const host = document.querySelector(name) as HTMLElement | null;
+  if (!host) return;
+  host.style.setProperty('position', 'fixed', 'important');
+  host.style.setProperty('z-index', '2147483647', 'important');
+  host.style.setProperty('top', '0', 'important');
+  host.style.setProperty('left', '0', 'important');
+  host.style.setProperty('width', '0', 'important');
+  host.style.setProperty('height', '0', 'important');
+  host.style.setProperty('overflow', 'visible', 'important');
+}
 
 /**
  * 从 window.getSelection() 重新抓选区并打开 Dialog —— 右键菜单"翻译选中内容"入口。
@@ -284,7 +315,7 @@ async function runPassiveScan() {
 /** 拉用户已查 lemma 集合，session storage 缓存 5 分钟。 */
 async function fetchKnownLemmas(): Promise<Set<string>> {
   try {
-    const cached = await chrome.storage.session.get(KNOWN_ITEMS_KEY);
+    const cached = await chrome.storage.local.get(KNOWN_ITEMS_KEY);
     const entry = cached[KNOWN_ITEMS_KEY] as
       | { lemmas: string[]; expiresAt: number }
       | undefined;
@@ -295,7 +326,7 @@ async function fetchKnownLemmas(): Promise<Set<string>> {
     if (!res.ok) return new Set();
     const data = (await res.json()) as { lemmas: string[] };
     const lemmas = data.lemmas ?? [];
-    await chrome.storage.session.set({
+    await chrome.storage.local.set({
       [KNOWN_ITEMS_KEY]: { lemmas, expiresAt: Date.now() + KNOWN_ITEMS_TTL_MS },
     });
     return new Set(lemmas);
