@@ -375,10 +375,13 @@ function useInlineLookup(ctx: SelectionContext | null): LookupState {
     }
     let cancelled = false;
     setState({ kind: 'loading' });
-    // GET 避免 CORS 预检；server 端 lookup 链 cache → ECDICT → free-dict → LLM，
+    // POST 带 selectionContext，让 server 端同时落 encounter 事件到学习记录。
     // ECDICT 命中时响应里会带 extras（tag / collins / exchange...）
-    const q = encodeURIComponent(ctx.selection.text);
-    fetch(`${BACKEND}/api/lookup?word=${q}`)
+    fetch(`${BACKEND}/api/lookup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ word: ctx.selection.text, selectionContext: ctx }),
+    })
       .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`http ${res.status}`))))
       .then((data: LookupResult) => {
         if (cancelled) return;
