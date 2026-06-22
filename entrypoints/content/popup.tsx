@@ -123,6 +123,8 @@ const DIALOG_CSS = `
   --eag-ui: system-ui, sans-serif;
   --eag-read: Georgia, serif;
 
+  position: fixed;
+  z-index: 2147483647;
   width: ${POPUP_WIDTH}px;
   max-width: calc(100vw - 24px);
   background: var(--eag-panel);
