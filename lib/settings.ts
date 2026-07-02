@@ -36,12 +36,15 @@ export interface ReadsightSettings {
    * 用 resolveLangBehavior() 读，别直接索引（要处理 `*` 兜底）。
    */
   langBehavior: Record<string, LangBehavior>;
+  /** 是否显示右下角悬浮翻译按钮 (FAB)。默认 true；关掉后 content script 不挂载它。 */
+  showFab: boolean;
 }
 
 export const DEFAULT_SETTINGS: ReadsightSettings = {
   selectionIndicator: 'dot',
   // 默认全 manual：零打扰、零意外。想自动翻某语言去设置里改。
   langBehavior: { [LANG_FALLBACK_KEY]: 'manual' },
+  showFab: true,
 };
 
 const STORAGE_KEY = 'readsight:settings';
@@ -67,6 +70,7 @@ function normalize(raw: unknown): ReadsightSettings {
   return {
     selectionIndicator: indicator,
     langBehavior: normalizeLangBehavior(obj.langBehavior),
+    showFab: obj.showFab !== false,
   };
 }
 

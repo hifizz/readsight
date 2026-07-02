@@ -33,7 +33,7 @@ import {
   isSamePrimary,
   languageLabelZh,
 } from '@/lib/page-language';
-import { getSettings, resolveLangBehavior } from '@/lib/settings';
+import { getSettings, resolveLangBehavior, useSettings } from '@/lib/settings';
 
 const BLOCK_SELECTOR = 'p, li, blockquote, h1, h2, h3, h4, h5, h6, dd';
 /** 文章正文容器选择器 —— h1 / 内嵌 header 在这种容器内才豁免外部过滤 */
@@ -1182,6 +1182,7 @@ const FAB_POSITION_KEY = 'readsight:fab-pos';
 type RuleLoadState = DomainRule | null | 'loading';
 
 export function TranslateFab() {
+  const { showFab } = useSettings();
   const s = useSyncExternalStore(subscribeModuleState, getModuleState, getModuleState);
   const [menuOpen, setMenuOpen] = useState(false);
   const [rule, setRule] = useState<RuleLoadState>('loading');
@@ -1271,6 +1272,8 @@ export function TranslateFab() {
     })();
   }, [rule, pageLangDetection]);
 
+  // 用户在设置里关掉了悬浮按钮：不挂载，页面上完全不出现
+  if (!showFab) return null;
   // loading 阶段：什么都不渲染（避免闪烁）
   if (rule === 'loading') return null;
   // never 模式：FAB 仍渲染（muted），让用户能从菜单切回 —— 不再像老版本那样
@@ -1287,15 +1290,9 @@ export function TranslateFab() {
     // FAB 主按钮默认走"翻译全页"——对现代 React 站点 / 复杂版面更稳；
     // 想要严格的"正文"模式仍可从菜单显式选择。
     //
-    // idle→active 时顺手写一条 always 域名规则："点击翻译即记住"下次进同站自动翻。
-    // 撤销路径不触碰规则（防止"只是本次想看原文"被永久取消订阅）。
-    // 例外：rule=never（muted FAB）时只翻本次、不覆盖用户显式设的"从不"——
-    // 想长期恢复请走菜单切回 session/always。
-    const willActivate = moduleState.status === 'idle';
+    // 主按钮点击只翻本次（"仅本次"语义），不写域名规则；想要下次自动翻
+    // 需要从菜单显式选"总是自动翻译"。
     togglePageTranslation('page');
-    if (willActivate && !isNever) {
-      void setDomainRule(hostname, { auto: 'always', mode: 'page' });
-    }
   }
 
   function onClickMode(mode: TranslateMode) {
