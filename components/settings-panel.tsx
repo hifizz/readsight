@@ -1,8 +1,6 @@
 /**
  * 全局设置面板（sidepanel 设置标签的内容）。
  *
- * 现仅含一项：划词指示样式（dot / pill）。后续可以堆别的全局偏好。
- *
  * 写入逻辑：直接 patchSettings → chrome.storage.sync.set。content script 通过
  * subscribeSettings 自动同步，无需 messaging 中转。
  */
@@ -17,6 +15,12 @@ import {
   type ReadsightSettings,
   type SelectionIndicator,
 } from '@/lib/settings';
+
+function setShowFab(value: boolean) {
+  patchSettings({ showFab: value }).catch((err) =>
+    console.warn('[readsight] patchSettings failed', err),
+  );
+}
 
 export function SettingsPanel() {
   const settings = useSettings();
@@ -39,6 +43,26 @@ export function SettingsPanel() {
             langKey={LANG_FALLBACK_KEY}
             title="其他语言"
           />
+        </div>
+      </section>
+
+      <section>
+        <div className="mb-3">
+          <h2 className="text-[14px] font-semibold text-foreground">悬浮翻译按钮</h2>
+          <p className="mt-1 text-[12px] leading-snug text-muted-foreground">
+            页面右下角的悬浮按钮，用于随时开关全页翻译。关闭后页面上不再显示这个按钮。
+          </p>
+        </div>
+        <div className="flex items-center justify-between gap-3 rounded-md border border-border p-3">
+          <span className="text-[13px] font-medium text-foreground">显示悬浮按钮</span>
+          <div className="flex rounded-md border border-border p-0.5">
+            <LangBehaviorSeg active={settings.showFab} onClick={() => setShowFab(true)}>
+              开启
+            </LangBehaviorSeg>
+            <LangBehaviorSeg active={!settings.showFab} onClick={() => setShowFab(false)}>
+              关闭
+            </LangBehaviorSeg>
+          </div>
         </div>
       </section>
 
