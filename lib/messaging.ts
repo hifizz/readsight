@@ -122,7 +122,7 @@ export interface LookupResult {
   audioUrl?: string;
   partsOfSpeech: Array<{
     pos: string;
-    // cn: 中文释义（D 方案：Free Dictionary 命中后用 MiniMax 批量翻一份和缓存共存）。
+    // cn: 中文释义（Free Dictionary 命中后由后端补齐并与词典缓存共存）。
     // 老缓存条目可能没这个字段，前端容忍 undefined。
     definitions: Array<{ definition: string; cn?: string; example?: string }>;
   }>;

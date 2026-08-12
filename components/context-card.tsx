@@ -24,16 +24,18 @@ const HL_TEXT = '#5a4300';
 
 interface ContextCardProps {
   ctx: SelectionContext;
-  backendUrl: string;
   onClear?: () => void;
 }
 
-export function ContextCard({ ctx, backendUrl, onClear }: ContextCardProps) {
+export function ContextCard({ ctx, onClear }: ContextCardProps) {
   const { selection, source, context } = ctx;
   const domain = extractDomain(source.url);
   const win = windowAround(context.sentence || context.paragraph, selection.text);
   const isShort = selection.type === 'word' || selection.type === 'phrase';
-  const showSpeak = selection.type !== 'word'; // word 走下面的 WordCard 喇叭
+  // 选中单词时，上方朗读本句；下方 WordCard 仍保留单词发音，两种朗读同时可用。
+  const speechText = selection.type === 'word'
+    ? context.sentence || context.paragraph || selection.text
+    : selection.text;
 
   return (
     <div className="shrink-0 border-b bg-muted/40 px-3.5 py-2.5">
@@ -44,7 +46,7 @@ export function ContextCard({ ctx, backendUrl, onClear }: ContextCardProps) {
           <span className="truncate">{domain}</span>
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
-          {showSpeak && <SpeakButton text={selection.text} backendUrl={backendUrl} />}
+          <SpeakButton text={speechText} />
           {onClear && (
             <Button
               variant="ghost"

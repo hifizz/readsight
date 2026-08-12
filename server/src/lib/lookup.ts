@@ -6,18 +6,17 @@
  *   2. wink-lemmatizer 还原 lemma（"outed" → "out", "studies" → "study"）
  *   3. 查 Postgres `dictionary_entries` 缓存（key = lemma）
  *   4. miss → 打 Free Dictionary API（free, no key）
- *   5. 又 miss → MiniMax 生成估计版（estimated: true）
+ *   5. 又 miss → DeepSeek V4 Flash 生成估计版（estimated: true）
  *   6. 命中后写缓存，下次同一 lemma 直接走步骤 3
  *
  * 注意：缓存按 lemma 做 key，所以 "outed" 和 "outing" 共用同一条缓存。
  */
-import { generateText, type LanguageModel } from 'ai';
+import { generateText } from 'ai';
 import lemmatize from 'wink-lemmatizer';
 import { eq } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { dictionaryEntries } from '@/db/schema';
-import { minimax, DEFAULT_MODEL_ID } from './minimax';
-import { zhipuFlash, isZhipuConfigured } from './zhipu';
+import { deepseekV4FlashText, DEEPSEEK_TEXT_MODEL_ID } from './deepseek';
 import { ecdictLookup, deriveRelationship, type EcdictExtras } from './ecdict';
 
 /** 与扩展端 lib/messaging.ts 的 LookupResult 保持同步 —— 故意重复定义以避免跨包导入。 */
@@ -34,7 +33,7 @@ export interface LookupResult {
   audioUrl?: string;
   partsOfSpeech: Array<{
     pos: string;
-    // cn: 中文释义；D 方案下 Free Dictionary 命中后由 MiniMax 批量翻译填入并一起入缓存。
+    // cn: 中文释义；Free Dictionary 命中后由 DeepSeek V4 Flash 批量翻译并一起入缓存。
     definitions: Array<{ definition: string; cn?: string; example?: string }>;
   }>;
   source: 'cache' | 'ecdict' | 'free-dictionary' | 'llm';
@@ -163,30 +162,27 @@ async function fetchFreeDictionary(lemmaWord: string): Promise<LookupBody | null
  * 把 Free Dictionary 返回的英文定义翻成中文短释义。
  *
  * 关键设计：
- *   - 按词性并行调用，每次只翻一个 POS 的 1-3 条定义。理由：MiniMax-M2.1 是
- *     thinking 模型，单次响应大头是推理 token（翻 2 条 ≈ 700 token，翻 8 条
- *     可超 4000）。分小批降低推理量，单次都能在合理预算下返完整 JSON。
+ *   - 按词性并行调用，每次只翻一个 POS 的 1-3 条定义，限制卡片尺寸并让
+ *     V4 Flash 稳定返回短 JSON。
  *   - 并行 Promise.all：3-4 个 POS 同时翻，墙钟时间 ≈ 单批耗时
  *   - 翻译跟英文释义一起入 dictionary_entries 缓存 —— 一次翻译永久可用
  *   - 单个 POS 失败 = 该词性 cn 缺失，其他词性正常显示
  */
 /**
- * 用指定 model 跑一次"翻译这组定义"的 LLM 调用。
- * 不做异常包装、不做降级 —— 那些逻辑在 translateOnePos 里。
- *
- * @param model 任意符合 AI SDK LanguageModel 接口的模型实例。
- *              传 Zhipu GLM-4-Flash 时无需推理预算；传 MiniMax M2.x 时要留足。
- * @param modelLabel 仅日志用；标识失败时是哪一家的问题。
- * @param maxOutputTokens 推理模型留 2500（容纳 CoT）；小快模型 400 够了。
+ * 用 V4 Flash 跑一次"翻译这组定义"的 LLM 调用。
+ * 不做异常包装；单个词性失败不会阻断词典主流程。
  */
 async function translateOnce(
   word: string,
   pos: string,
   defs: string[],
-  model: LanguageModel,
-  modelLabel: string,
-  maxOutputTokens: number,
 ): Promise<string[] | null> {
+  const model = deepseekV4FlashText;
+  if (!model) {
+    console.warn(`[lookup] zh ${pos}: ${DEEPSEEK_TEXT_MODEL_ID} is not configured`);
+    return null;
+  }
+
   const prompt = [
     `You translate English dictionary definitions into short, idiomatic Chinese glosses suitable for a dictionary lookup card. The headword being defined is "${word}" (used as ${pos}).`,
     '',
@@ -206,14 +202,14 @@ async function translateOnce(
   const result = await generateText({
     model,
     prompt,
-    maxOutputTokens,
+    maxOutputTokens: 400,
   });
   const text = result.text;
   const start = text.indexOf('[');
   const end = text.lastIndexOf(']');
   if (start < 0 || end <= start) {
     console.warn(
-      `[lookup] zh ${pos} (${modelLabel}): no JSON array, finish=${result.finishReason}, raw=${text.slice(0, 200)}`,
+      `[lookup] zh ${pos} (${DEEPSEEK_TEXT_MODEL_ID}): no JSON array, finish=${result.finishReason}, raw=${text.slice(0, 200)}`,
     );
     return null;
   }
@@ -224,7 +220,7 @@ async function translateOnce(
     !arr.every((s) => typeof s === 'string')
   ) {
     console.warn(
-      `[lookup] zh ${pos} (${modelLabel}): shape mismatch, got=${Array.isArray(arr) ? arr.length : 'non-array'}, expected=${defs.length}`,
+      `[lookup] zh ${pos} (${DEEPSEEK_TEXT_MODEL_ID}): shape mismatch, got=${Array.isArray(arr) ? arr.length : 'non-array'}, expected=${defs.length}`,
     );
     return null;
   }
@@ -232,14 +228,8 @@ async function translateOnce(
 }
 
 /**
- * 翻译一个 POS 下的所有定义，三层防御（按试错代价从低到高）：
- *   1. 首选 Zhipu GLM-4-Flash（如果配了 ZHIPU_API_KEY）—— ~1-2s
- *   2. Zhipu 同一调用再试一次 —— 又一个 ~1-2s
- *      理由：实测发现 Next.js dev (Turbopack) 下偶发响应截断
- *      ("Unterminated string in JSON at position 19")，重试基本能命中
- *   3. Fallback: MiniMax DEFAULT_MODEL_ID 大 thinking —— ~18s 但稳
- *
- * Zhipu 没配 = 跳过 1、2，直接走 MiniMax。
+ * 翻译一个 POS 下的所有定义。词典补充只走 DeepSeek V4 Flash；失败时保留
+ * 原始英文释义，而不是切换到其他模型。
  */
 async function translateOnePos(
   word: string,
@@ -248,36 +238,10 @@ async function translateOnePos(
 ): Promise<string[] | null> {
   if (defs.length === 0) return [];
 
-  // 1) + 2) Primary: Zhipu GLM-4-Flash with one retry
-  if (isZhipuConfigured() && zhipuFlash) {
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      try {
-        const arr = await translateOnce(word, pos, defs, zhipuFlash, `glm-4-flash#${attempt}`, 400);
-        if (arr) return arr;
-        // 返 null = JSON 解析失败；进入下一轮重试（attempt 2）或 fallback
-      } catch (err) {
-        console.warn(
-          `[lookup] zh ${pos} (glm-4-flash#${attempt}) threw:`,
-          err instanceof Error ? err.message : err,
-        );
-        // 异常也走重试 / fallback
-      }
-    }
-    console.warn(`[lookup] zh ${pos}: Zhipu both attempts failed, falling back to MiniMax`);
-  }
-
-  // 3) Fallback: MiniMax thinking model
   try {
-    return await translateOnce(
-      word,
-      pos,
-      defs,
-      minimax(DEFAULT_MODEL_ID),
-      DEFAULT_MODEL_ID,
-      2500,
-    );
+    return await translateOnce(word, pos, defs);
   } catch (err) {
-    console.warn(`[lookup] zh ${pos} (${DEFAULT_MODEL_ID}) threw`, err);
+    console.warn(`[lookup] zh ${pos} (${DEEPSEEK_TEXT_MODEL_ID}) threw`, err);
     return null;
   }
 }
@@ -306,12 +270,17 @@ async function translateDefinitionsToZh(
 // --- LLM fallback ----------------------------------------------------------
 
 /**
- * 词典完全没命中（多见于品牌名、新造词、领域缩写）时让 MiniMax 估一份。
+ * 词典完全没命中（多见于品牌名、新造词、领域缩写）时让 DeepSeek V4 Flash 估一份。
  * 标 estimated:true 让 UI 在 WordCard 上加 "guess" 角标，对应 PRD §6.2 原则。
  *
  * 既然已经在调 LLM，顺手让它把 cn 字段一起填进去，省一次翻译往返。
  */
 async function llmLookup(lemmaWord: string): Promise<LookupBody> {
+  const model = deepseekV4FlashText;
+  if (!model) {
+    throw new Error(`${DEEPSEEK_TEXT_MODEL_ID} is not configured for lookup fallback`);
+  }
+
   const prompt = [
     `You are a lexicographer. Generate a brief bilingual dictionary entry for the English token "${lemmaWord}".`,
     'Respond with ONLY a JSON object — no prose, no markdown, no code fences.',
@@ -325,7 +294,7 @@ async function llmLookup(lemmaWord: string): Promise<LookupBody> {
   ].join('\n');
 
   const { text } = await generateText({
-    model: minimax(DEFAULT_MODEL_ID),
+    model,
     prompt,
     maxOutputTokens: 600,
   });
@@ -442,7 +411,7 @@ export async function lookupWord(input: string): Promise<LookupResult> {
     };
   }
 
-  // 3) Free Dictionary（D 方案：命中后让 MiniMax 把英文 definition 批量翻译成中文短义，
+  // 3) Free Dictionary（D 方案：命中后让 DeepSeek V4 Flash 把英文 definition 批量翻译成中文短义，
   //    一并写进缓存。翻译失败不影响主流程，cn 字段缺失即可。）
   const dict = await fetchFreeDictionary(lemmaWord);
   if (dict && dict.partsOfSpeech.length > 0) {

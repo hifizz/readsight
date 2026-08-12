@@ -26,7 +26,8 @@ After code change in `entrypoints/`, `pnpm build` to refresh the unpacked extens
 
 - **Strict context isolation (PRD §3.1)**: content script is the only one touching page DOM; sidepanel never reads the page directly; all cross-context traffic flows through `background.ts`. Don't break this.
 - **`entrypoints/content/translate.tsx`** is the heart of M3. Two modes: `article` (Readability + ancestor blacklist, strict) and `page` (text-walker over any block-like tag, permissive). MutationObserver续翻 lives here too — see "MutationObserver 续翻" comment block.
-- **Translation provider chain (`server/src/lib/translate.ts`)**: DeepSeek `deepseek-v4-flash` (thinking disabled via fetch wrapper) → Zhipu GLM-4-Flash → OpenRouter free models. Cache hash namespace is `glm-4-flash` (`CACHE_HASH_NAMESPACE`) for historical reasons — keep it so existing cache stays valid when default provider changes.
+- **Model routing**: sidepanel/contextual chat uses DeepSeek `deepseek-v4-pro`; full-page translation and model-assisted dictionary lookup use `deepseek-v4-flash`. All three bindings disable thinking. Translation retains its DeepSeek → Zhipu GLM-4-Flash → OpenRouter fallback chain and `glm-4-flash` (`CACHE_HASH_NAMESPACE`) cache namespace for historical cache compatibility.
+- **Speech playback**: sentence and phrase listen controls use browser `speechSynthesis` locally (`en-US`); there is no backend TTS endpoint. Voice availability and quality are browser/OS-dependent.
 - **Translation cache** lives in Postgres `translations` table. Hash key = sha256(namespace|target_lang|text). Same English text in multiple sites = one entry.
 - **AI SDK structured output**: DeepSeek doesn't support `response_format: json_schema`, only `json_object`. The "AI SDK Warning: responseFormat not supported" is benign — we're in json_object weak mode, prompt has explicit "no full-width quotes" rule, GLM/OpenRouter兜底 catches rare parse failures.
 
@@ -105,8 +106,8 @@ Keep these patterns when adding new ones. Don't install Playwright into `english
 
 ## Provider env vars (server/.env.local, gitignored)
 
-- `DATABASE_URL` — local Postgres
-- `DEEPSEEK_API_KEY` — primary translation
+- `DATABASE_URL` — local Postgres；Readsight 业务表在 `readsight` schema，迁移记录在 `readsight_migrations`，可与同库其他项目并存
+- `DEEPSEEK_API_KEY` — required for V4-Pro chat, V4-Flash model-assisted lookup, and primary translation
 - `ZHIPU_API_KEY` — first兜底
 - `OPENROUTER_API_KEY` — second兜底 (西方模型，绕国产内容审查)
 - `TRANSLATE_PRIMARY` (optional) — `'deepseek'` (default) | `'zhipu'` | `'openrouter'` to reorder the chain
