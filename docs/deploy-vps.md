@@ -58,7 +58,7 @@ pnpm db:generate          # 改完 src/db/schema.ts 后生成新的 drizzle/000N
 git add server/drizzle/   # 含 meta/，必须提交（见 §6 坑1）
 git commit -m "db: ..." && git push origin main   # 部署时自动 migrate，幂等
 ```
-**不需要**手动连库 migrate。本地开发仍可 `pnpm db:push` 图快。
+**不需要**手动连库 migrate。本地开发仍可 `pnpm db:push` 图快。业务表固定在 `readsight` schema，迁移记录在 `readsight_migrations`；同一个 database 中其他项目的 `public` 表不会参与 diff 或迁移。
 
 ## 5. 改环境变量 / 轮换密钥
 
@@ -69,7 +69,9 @@ coolify app env sync lu2vcbh5j26vj9mn11wdh7n8 --file server/.env.production
 # 3) 重新部署生效（运行时变量重启即可；这步可手动触发，因为没 push 不会有 webhook）
 coolify deploy uuid lu2vcbh5j26vj9mn11wdh7n8
 ```
-> 当前 MINIMAX/DEEPSEEK/ZHIPU/OPENROUTER 用的是 **dev key**，正式对外前按此流程轮换。
+> 当前 DEEPSEEK/ZHIPU/OPENROUTER 用的是 **dev key**，正式对外前按此流程轮换。`DEEPSEEK_API_KEY` 是必填项：它支持 V4-Pro 侧栏对话、V4-Flash 词典模型辅助和主翻译；Zhipu、OpenRouter 保留为全文翻译 fallback。
+>
+> 后端和扩展联合上线并过了回滚窗口后，从 Coolify 的环境变量和本地 gitignored 配置中删除遗留的 `MINIMAX_API_KEY`、`MINIMAX_CHAT_MODEL`。浏览器朗读走本地 `speechSynthesis`，不需要云端 TTS 密钥。
 
 ## 6. 已踩的坑（重要，别再犯）
 

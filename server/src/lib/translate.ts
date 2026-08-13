@@ -23,7 +23,11 @@ import { db } from '@/db/client';
 import { translations } from '@/db/schema';
 import { zhipuFlash, isZhipuConfigured } from './zhipu';
 import { openrouterModel, isOpenrouterConfigured, OPENROUTER_MODEL_ID } from './openrouter';
-import { deepseekChat, isDeepseekConfigured, DEEPSEEK_MODEL_ID } from './deepseek';
+import {
+  deepseekV4FlashText,
+  isDeepseekConfigured,
+  DEEPSEEK_MODEL_ID,
+} from './deepseek';
 
 const TARGET_LANG = 'zh-CN' as const;
 const MODEL_LABEL_ZHIPU = 'glm-4-flash';
@@ -51,7 +55,7 @@ interface ProviderSlot {
 function getProviderOrder(): ProviderSlot[] {
   const deepseek: ProviderSlot = {
     name: 'deepseek',
-    model: deepseekChat,
+    model: deepseekV4FlashText,
     configured: isDeepseekConfigured(),
     label: DEEPSEEK_MODEL_ID,
   };
