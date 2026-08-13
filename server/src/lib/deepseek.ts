@@ -7,12 +7,9 @@
  *     —— 比 GLM 略贵但翻译质量明显更好，且对 JSON-only 输出协议更守规矩。
  *   - 命中国产内容审查时还有 OpenRouter 西方模型兜底（translate.ts 的 fallback 链）。
  *
- * 模型选择：`deepseek-v4-flash` + 显式关 thinking。
- *   - V4-flash 是 deepseek-chat / deepseek-reasoner 的统一接班者，
- *     默认 thinking=enabled（=reasoner 行为：先吐 CoT 再给答案），
- *     非 thinking 等价于旧 deepseek-chat。
- *   - 翻译是机械任务，CoT 推理只会烧 token 不提质量，必须关。
- *   - V4-pro 比 flash 贵 3×（output $0.87/M），翻译用例没必要。
+ * 模型选择：对话固定 `deepseek-v4-pro`，翻译与词典固定
+ * `deepseek-v4-flash`；两者都显式关闭 thinking。这样聊天升级不会改变
+ * 机械文本任务的延迟、成本或翻译缓存行为。
  *
  * 协议：OpenAI-compatible。base URL: api.deepseek.com/v1
  *   key 形如 "sk-..."
@@ -21,9 +18,13 @@ import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import type { LanguageModel } from 'ai';
 import { fetch as undiciFetch } from 'undici';
 
-const apiKey = process.env.DEEPSEEK_API_KEY;
+const apiKey = process.env.DEEPSEEK_API_KEY?.trim();
 
-export const DEEPSEEK_MODEL_ID = 'deepseek-v4-flash';
+export const DEEPSEEK_CHAT_MODEL_ID = 'deepseek-v4-pro';
+export const DEEPSEEK_TEXT_MODEL_ID = 'deepseek-v4-flash';
+
+/** 兼容既有翻译缓存/日志的 Flash 模型标识。 */
+export const DEEPSEEK_MODEL_ID = DEEPSEEK_TEXT_MODEL_ID;
 
 export function isDeepseekConfigured(): boolean {
   return !!apiKey && apiKey.length > 0;
@@ -48,11 +49,21 @@ const fetchWithThinkingDisabled: typeof fetch = async (input, init) => {
   return undiciFetch(input as never, init as never) as unknown as ReturnType<typeof fetch>;
 };
 
-export const deepseekChat: LanguageModel | null = apiKey
+const deepseek = apiKey
   ? createOpenAICompatible({
       name: 'deepseek',
       baseURL: 'https://api.deepseek.com/v1',
       apiKey,
       fetch: fetchWithThinkingDisabled,
-    })(DEEPSEEK_MODEL_ID)
+    })
+  : null;
+
+/** 高能力侧栏对话模型：V4 Pro，非 thinking。 */
+export const deepseekV4ProChat: LanguageModel | null = deepseek
+  ? deepseek(DEEPSEEK_CHAT_MODEL_ID)
+  : null;
+
+/** 翻译和词典使用的轻量文本模型：V4 Flash，非 thinking。 */
+export const deepseekV4FlashText: LanguageModel | null = deepseek
+  ? deepseek(DEEPSEEK_TEXT_MODEL_ID)
   : null;

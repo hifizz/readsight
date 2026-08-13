@@ -18,6 +18,10 @@ export default defineConfig({
   out: './drizzle',
   dialect: 'postgresql',
   dbCredentials: { url: process.env.DATABASE_URL },
+  // 只检查 Readsight 的命名空间；同库其他项目的对象不参与 drizzle-kit diff/push。
+  schemaFilter: ['readsight'],
+  // 单独存迁移历史，避免 schemaFilter 将其误判为待删除的业务表。
+  migrations: { schema: 'readsight_migrations' },
   // verbose: push 时打印 SQL，方便审计要执行的 DDL。
   verbose: true,
 });

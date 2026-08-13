@@ -5,34 +5,40 @@
  * 约定：
  *   - 主键全部 `text` 列，前端塞 ULID / UUID 字符串，不让 DB 操心 id 生成器
  *   - 嵌套对象（anchor、content）走 jsonb：保住灵活性，等需要查询再加列拆字段
- *   - 三个枚举 pgEnum 是 Postgres 原生 enum，跨表共享类型语义，
+ *   - 枚举使用 Postgres 原生 enum，跨表共享类型语义，
  *     drizzle-kit push 时自动建出 type
  *
  * 本期 schema 已经为 M2 (EncounterEvent 落库) / M4 (FSRS 调度) 留好坑位，
  * 但 `/api/chat` 暂时不写 encounter_events，PRD §5.2 落库逻辑留到下一迭代。
  */
-import { pgTable, pgEnum, text, jsonb, timestamp, integer, index } from 'drizzle-orm/pg-core';
+import { pgSchema, text, jsonb, timestamp, integer, index } from 'drizzle-orm/pg-core';
 
-export const eventTypeEnum = pgEnum('encounter_event_type', [
+/**
+ * 所有 Readsight 业务对象都放在独立 PostgreSQL schema，避免与同一 database
+ * 中其他项目的 public 表、enum 和 Drizzle 迁移记录发生冲突。
+ */
+export const readsightSchema = pgSchema('readsight');
+
+export const eventTypeEnum = readsightSchema.enum('encounter_event_type', [
   'lookup',
   'quick',
   'deepchat',
   'passive_reencounter',
 ]);
 
-export const outcomeEnum = pgEnum('encounter_outcome', [
+export const outcomeEnum = readsightSchema.enum('encounter_outcome', [
   'understood',
   'still_unsure',
 ]);
 
-export const selectionTypeEnum = pgEnum('selection_type', [
+export const selectionTypeEnum = readsightSchema.enum('selection_type', [
   'word',
   'phrase',
   'sentence',
   'multi',
 ]);
 
-export const chatRoleEnum = pgEnum('chat_role', [
+export const chatRoleEnum = readsightSchema.enum('chat_role', [
   'system',
   'user',
   'assistant',
@@ -43,7 +49,7 @@ export const chatRoleEnum = pgEnum('chat_role', [
  * PRD §5.1 SelectionContext —— 划词时一次抓全，是后续查询、深聊、学习记录
  * 共同的"唯一真相源"。
  */
-export const selectionContexts = pgTable('selection_contexts', {
+export const selectionContexts = readsightSchema.table('selection_contexts', {
   id: text('id').primaryKey(),
   capturedAt: timestamp('captured_at', { withTimezone: true }).notNull().defaultNow(),
   url: text('url').notNull(),
@@ -75,7 +81,7 @@ export const selectionContexts = pgTable('selection_contexts', {
  *                passive_reencounter（已查词在新文章中再次出现且未主动查 = 弱正信号）
  *   - outcome: LLM 软评估 "解释完是否真懂" 或显式反馈
  */
-export const encounterEvents = pgTable(
+export const encounterEvents = readsightSchema.table(
   'encounter_events',
   {
     id: text('id').primaryKey(),
@@ -104,7 +110,7 @@ export const encounterEvents = pgTable(
  * threadId 直接复用 selectionContextId（前端 selectionId）。
  * content 留 jsonb：assistant-ui 一条消息可能有 text / reasoning / tool-call 多 part。
  */
-export const chatMessages = pgTable(
+export const chatMessages = readsightSchema.table(
   'chat_messages',
   {
     id: text('id').primaryKey(),
@@ -128,7 +134,7 @@ export const chatMessages = pgTable(
  * - source 标来源：`free-dictionary` / `llm` / `cache` —— 让 UI 在 LLM 兜底
  *   时显示 "estimated" 标记，对应 PRD §6.2 的"不让 AI 当主力"原则。
  */
-export const dictionaryEntries = pgTable('dictionary_entries', {
+export const dictionaryEntries = readsightSchema.table('dictionary_entries', {
   lemma: text('lemma').primaryKey(),
   payload: jsonb('payload').notNull(),
   source: text('source').notNull(),
@@ -147,7 +153,7 @@ export type NewDictionaryEntryRow = typeof dictionaryEntries.$inferInsert;
  * - target_lang 留扩展位（本期只 'zh-CN'）
  * - model 存 LLM ID，迁移到新模型时旧缓存自然失效不污染
  */
-export const translations = pgTable('translations', {
+export const translations = readsightSchema.table('translations', {
   hash: text('hash').primaryKey(),
   originalText: text('original_text').notNull(),
   zh: text('zh').notNull(),
@@ -163,10 +169,10 @@ export type NewTranslationRow = typeof translations.$inferInsert;
  * TTS 缓存（PRD §6.3 Tier 2 句子精听 / 控成本）。
  *
  * - PK = sha256(text + voice + model)，文本可能很长不适合做 PK
- * - audioHex: MiniMax T2A v2 默认就返 hex 编码 MP3，直接落库省一次编解码
- * - 同一句话用户多次点 Speak（重听）→ 第二次命中缓存，0 token、瞬回
+ * - audioHex: 历史云端 TTS 返回的 hex 编码 MP3；表保留用于兼容旧缓存和回滚
+ * - 当前浏览器语音路径不再读写此表；保留旧数据以便兼容和回滚
  */
-export const ttsCache = pgTable('tts_cache', {
+export const ttsCache = readsightSchema.table('tts_cache', {
   hash: text('hash').primaryKey(),
   text: text('text').notNull(),
   voice: text('voice').notNull(),

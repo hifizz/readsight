@@ -332,7 +332,7 @@ const DIALOG_CSS = `
   transition: border-color .12s;
 }
 .eag-input::placeholder { color: var(--eag-faint); }
-.eag-input:focus { border-color: var(--eag-ink); }
+.eag-input:focus { outline: 3px solid #f6eee1; }
 .eag-send {
   display: inline-flex;
   align-items: center;

@@ -6,6 +6,8 @@
 
 一份"我们做完了什么 / 怎么做的 / 为什么这么决策"的快照，给未来的自己 / 接手者 / Claude 读。
 
+> **当前架构补充（2026-08-12）**：以下 M0–M3 快照保留其当时的模型、TTS 和里程碑记录，不作为现行运维说明。当前侧栏/语境对话使用非 thinking 的 DeepSeek `deepseek-v4-pro`；全文翻译、词典中文释义补全和未知词估计使用非 thinking 的 `deepseek-v4-flash`。全文翻译仍保持 DeepSeek → Zhipu → OpenRouter fallback 与既有缓存命名空间。短语/句子朗读直接使用浏览器 `speechSynthesis`（`en-US`），`/api/tts` 已退休；既有 `tts_cache` 数据未删除。现行配置与部署说明见 `CLAUDE.md`、`docs/plan-deployment.md` 和 `docs/deploy-vps.md`。
+
 ---
 
 ## 一、产品定位

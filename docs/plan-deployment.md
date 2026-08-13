@@ -2,7 +2,7 @@
 
 ## Context
 
-后端（`server/` 下的 Next.js 16）需要从本地 `localhost:4010` 搬到一个常驻的对外地址，让 Chrome 扩展在任何设备/网络下都能用上同一个 backend（翻译、词典、TTS、对话）。
+后端（`server/` 下的 Next.js 16）需要从本地 `localhost:4010` 搬到一个常驻的对外地址，让 Chrome 扩展在任何设备/网络下都能用上同一个 backend（翻译、词典、对话）。短语和句子的朗读由扩展在浏览器中通过 `speechSynthesis` 本地处理，不经过后端。
 
 用户给了三个候选：Singapore VPS、Vercel、Cloudflare。**结论是 VPS + Coolify**，两个硬性技术因素直接淘汰了 serverless 路线：
 
@@ -68,12 +68,13 @@
 - 在 Coolify 里 **New Resource → Application → Public Repository**，指向 git repo
 - Build Pack: **Dockerfile**，Base Directory: `/server`，Dockerfile Location: `server/Dockerfile`
 - 加 Postgres service，自动注入内网 `DATABASE_URL`（形如 `postgres://postgres:xxx@postgres-xxxx:5432/postgres`）
-- Environment Variables（参考 Phase 1 报告里那 10 项）：
+- Environment Variables：
   - `DATABASE_URL` ← Coolify Postgres 自动注入
-  - `DEEPSEEK_API_KEY` / `ZHIPU_API_KEY` / `OPENROUTER_API_KEY` / `OPENROUTER_MODEL` / `TRANSLATE_PRIMARY`
-  - `MINIMAX_API_KEY` / `MINIMAX_CHAT_MODEL`
+  - `DEEPSEEK_API_KEY`（必填：`deepseek-v4-pro` 侧栏对话、`deepseek-v4-flash` 词典模型辅助与主翻译）
+  - `ZHIPU_API_KEY` / `OPENROUTER_API_KEY` / `OPENROUTER_MODEL` / `TRANSLATE_PRIMARY`（全文翻译 fallback 或路由覆盖）
   - `ECDICT_PATH=/app/data/ecdict.sqlite`
   - `NODE_ENV=production`
+- 完成后端与扩展的联合上线、并经过回滚窗口后，从 Coolify 等外部密钥存储中移除遗留的 `MINIMAX_API_KEY` 和 `MINIMAX_CHAT_MODEL`；新部署不应配置它们。
 - Domains: 绑你自己的子域（如 `eag-api.yourdomain.com`），Coolify 自动签 TLS
 - Health Check: `GET /api/known-items` 200 就行（这个端点不用 LLM，瞬响）
 
@@ -95,7 +96,7 @@
    - `curl https://eag-api.yourdomain.com/api/known-items` → 200
    - `curl -X POST https://eag-api.yourdomain.com/api/translate -H 'content-type: application/json' -d '{"blocks":[{"id":"t1","text":"Hello world."}]}'` → 翻译结果回来
 3. **扩展端**：在 `wxt.config.ts` 设环境变量后 `pnpm build`，重装扩展，在任意英文页测翻译 / 划词 Dialog / FAB —— 走 Coolify 域名而非 localhost
-4. **数据库迁移成功**：进 Coolify Postgres console `\dt` 看到 6 张表
+4. **数据库迁移成功**：进 Coolify Postgres console `\dt readsight.*` 看到 6 张业务表；`readsight_migrations` 仅保存本项目迁移记录
 
 ## 显式不做
 

@@ -159,7 +159,6 @@ export default function App() {
               {selection && (
                 <ContextCard
                   ctx={selection}
-                  backendUrl={BACKEND}
                   onClear={() => setSelection(null)}
                 />
               )}

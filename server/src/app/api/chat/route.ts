@@ -17,7 +17,7 @@
  */
 import crypto from 'node:crypto';
 import { streamText, convertToModelMessages, type UIMessage } from 'ai';
-import { minimax, DEFAULT_MODEL_ID } from '@/lib/minimax';
+import { deepseekV4ProChat, isDeepseekConfigured } from '@/lib/deepseek';
 import { db } from '@/db/client';
 import { chatMessages } from '@/db/schema';
 import { upsertSelectionContext, type SelectionContextDTO } from '@/lib/selection-context';
@@ -84,6 +84,16 @@ function extractUserText(m: UIMessage | undefined): string {
 }
 
 export async function POST(req: Request) {
+  if (!isDeepseekConfigured() || !deepseekV4ProChat) {
+    return Response.json(
+      {
+        error: 'deepseek_not_configured',
+        message: 'Chat is unavailable because DEEPSEEK_API_KEY is not configured.',
+      },
+      { status: 503 },
+    );
+  }
+
   const body = (await req.json()) as ChatRequestBody;
   const ctx = body.selectionContext;
   const actionTag = body.actionTag;
@@ -97,7 +107,7 @@ export async function POST(req: Request) {
   const messages = body.messages ?? [];
 
   const result = streamText({
-    model: minimax(DEFAULT_MODEL_ID),
+    model: deepseekV4ProChat,
     system: buildSystemPrompt(ctx, actionTag),
     messages: await convertToModelMessages(messages),
     /**
