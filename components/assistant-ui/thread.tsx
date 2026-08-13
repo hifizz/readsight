@@ -110,7 +110,7 @@ export const Thread: FC<ThreadProps> = ({
          *   - 内容长：inner div 被消息撑大，超过 viewport 时 Viewport 滚动
          * composer 已经搬出 Viewport，这里再用 flex-1 不会重蹈 mt-auto 撑出空白的覆辙。
          */}
-        <div className="mx-auto flex w-full max-w-(--thread-max-width) flex-1 flex-col px-3.5 pt-3 pb-6">
+        <div className="mx-auto flex w-full max-w-(--thread-max-width) flex-1 flex-col px-1 pt-3 pb-6">
           {viewportPrefix}
 
           <AuiIf condition={(s) => s.thread.isEmpty}>
