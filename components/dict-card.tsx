@@ -241,6 +241,8 @@ export const DICT_CARD_CSS = `
   --eag-sel-strong: #a9c6ff;
   --eag-sand: #9a7330;
   --eag-sand-bg: #f6efe1;
+  --eag-control-bg: #faf8f3;
+  --eag-control-hover: #f4f1ea;
   /* 字体：完全跟系统默认 —— system-ui 在 Mac=SF+PingFang、Win=Segoe+YaHei、
    * Linux=系统默认；serif 兜底 Georgia（桌面级常驻字体）。无任何下载。 */
   --eag-ui: system-ui, sans-serif;
@@ -249,6 +251,24 @@ export const DICT_CARD_CSS = `
   font-family: var(--eag-ui);
   color: var(--eag-ink);
   -webkit-font-smoothing: antialiased;
+}
+
+/* SidePanel 由 html.dark 驱动主题。DictCard 自带 scoped 色板，因此需要在这里
+ * 同步覆盖，而不能只依赖外层 WordCard 的 text-foreground / bg-card。 */
+.dark .eag-dict-card {
+  --eag-ink: #f4f4f5;
+  --eag-ink-soft: #d4d4d8;
+  --eag-muted: #a1a1aa;
+  --eag-faint: #71717a;
+  --eag-line: #3f3f46;
+  --eag-line-2: #52525b;
+  --eag-paper: #18181b;
+  --eag-panel: #27272a;
+  --eag-sel-strong: #7aa2f7;
+  --eag-sand: #e6bd72;
+  --eag-sand-bg: #3b3020;
+  --eag-control-bg: #27272a;
+  --eag-control-hover: #3f3f46;
 }
 
 /* IPA + 发音按钮 */
@@ -281,7 +301,7 @@ export const DICT_CARD_CSS = `
   height: 30px;
   border-radius: 9px;
   border: 1px solid var(--eag-line);
-  background: #faf8f3;
+  background: var(--eag-control-bg);
   color: var(--eag-ink);
   cursor: pointer;
   position: relative;
@@ -289,7 +309,7 @@ export const DICT_CARD_CSS = `
   padding: 0;
   transition: border-color .12s, background .12s;
 }
-.eag-dict-card .eag-speak:hover { border-color: var(--eag-line-2); background: #f4f1ea; }
+.eag-dict-card .eag-speak:hover { border-color: var(--eag-line-2); background: var(--eag-control-hover); }
 .eag-dict-card .eag-speak.eag-on::after {
   content: "";
   position: absolute;
