@@ -49,6 +49,18 @@ import { RecordsList, type HistoryRecord } from '@/components/records-list';
 import { SettingsPanel } from '@/components/settings-panel';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import {
+  authFetch,
+  authHeaders,
+  getAuthToken,
+  getStoredAuthUser,
+  refreshAuthUser,
+  registerWithEmail,
+  signInWithEmail,
+  signOut,
+  subscribeAuth,
+  type AuthUser,
+} from '@/lib/auth';
 
 const BACKEND = import.meta.env.WXT_BACKEND_URL ?? 'http://localhost:4010';
 const STORAGE_KEY_LATEST = 'readsight:latest-selection-id';
@@ -56,7 +68,43 @@ const STORAGE_KEY_PREFIX = 'readsight:selection:';
 
 type TabKey = 'chat' | 'records' | 'settings';
 
+type AuthState =
+  | { kind: 'loading' }
+  | { kind: 'signed-out' }
+  | { kind: 'signed-in'; user: AuthUser };
+
 export default function App() {
+  const [authState, setAuthState] = useState<AuthState>({ kind: 'loading' });
+
+  const reloadAuth = useCallback(async () => {
+    const [token, storedUser] = await Promise.all([getAuthToken(), getStoredAuthUser()]);
+    if (!token) {
+      setAuthState({ kind: 'signed-out' });
+      return;
+    }
+    try {
+      const user = await refreshAuthUser(BACKEND);
+      setAuthState(user ? { kind: 'signed-in', user } : { kind: 'signed-out' });
+    } catch {
+      setAuthState(storedUser ? { kind: 'signed-in', user: storedUser } : { kind: 'signed-out' });
+    }
+  }, []);
+
+  useEffect(() => {
+    void reloadAuth();
+    return subscribeAuth(() => void reloadAuth());
+  }, [reloadAuth]);
+
+  if (authState.kind === 'loading') {
+    return <div className="flex h-screen items-center justify-center text-sm text-muted-foreground">正在检查登录状态…</div>;
+  }
+  if (authState.kind === 'signed-out') {
+    return <AuthGate onAuthenticated={(user) => setAuthState({ kind: 'signed-in', user })} />;
+  }
+  return <AuthenticatedApp user={authState.user} onSignedOut={() => setAuthState({ kind: 'signed-out' })} />;
+}
+
+function AuthenticatedApp({ user, onSignedOut }: { user: AuthUser; onSignedOut: () => void }) {
   const [selection, setSelection] = useState<SelectionContext | null>(null);
   const [activeTab, setActiveTab] = useState<TabKey>('chat');
   const [recordsRefreshToken, setRecordsRefreshToken] = useState(0);
@@ -71,6 +119,7 @@ export default function App() {
       () =>
         new DefaultChatTransport({
           api: `${BACKEND}/api/chat`,
+          headers: () => authHeaders(),
           body: () => {
             const actionTag = pendingActionTagRef.current ?? undefined;
             pendingActionTagRef.current = null;
@@ -87,7 +136,7 @@ export default function App() {
   const handleSelectRecord = useCallback(async (record: HistoryRecord) => {
     if (!record.lastContextRef) return;
     try {
-      const res = await fetch(
+      const res = await authFetch(
         `${BACKEND}/api/selection-context/${encodeURIComponent(record.lastContextRef)}`,
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -194,12 +243,99 @@ export default function App() {
           {activeTab === 'settings' && (
             <div className="min-h-0 flex-1 overflow-y-auto">
               <SettingsPanel />
+              <div className="mx-4 mb-4 rounded-md border border-border p-3">
+                <p className="text-xs text-muted-foreground">当前账号</p>
+                <p className="mt-1 truncate text-sm font-medium">{user.email}</p>
+                <button
+                  type="button"
+                  className="mt-3 rounded-md border border-border px-3 py-1.5 text-xs hover:bg-muted"
+                  onClick={() => {
+                    void signOut(BACKEND).finally(onSignedOut);
+                  }}
+                >
+                  退出登录
+                </button>
+              </div>
             </div>
           )}
         </div>
       </TooltipProvider>
     </AssistantRuntimeProvider>
   );
+}
+
+function AuthGate({ onAuthenticated }: { onAuthenticated: (user: AuthUser) => void }) {
+  const [mode, setMode] = useState<'sign-in' | 'register'>('sign-in');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setError(null);
+    if (!email.includes('@')) {
+      setError('请输入有效邮箱');
+      return;
+    }
+    if (password.length < 10) {
+      setError('密码至少需要 10 个字符');
+      return;
+    }
+    setBusy(true);
+    try {
+      const user = mode === 'register'
+        ? await registerWithEmail(BACKEND, email, password)
+        : await signInWithEmail(BACKEND, email, password);
+      await removePendingAutoSend();
+      onAuthenticated(user);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '登录失败，请重试');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <main className="flex h-screen items-center justify-center bg-background p-5 text-foreground">
+      <div className="w-full max-w-sm">
+        <div className="mb-7 text-center">
+          <h1 className="text-xl font-semibold">见微 Readsight</h1>
+          <p className="mt-1 text-sm text-muted-foreground">登录后保存属于你的阅读与学习记录</p>
+        </div>
+        <div className="mb-4 grid grid-cols-2 rounded-lg bg-muted p-1 text-sm">
+          <button type="button" className={`rounded-md py-2 ${mode === 'sign-in' ? 'bg-background font-medium shadow-sm' : 'text-muted-foreground'}`} onClick={() => { setMode('sign-in'); setError(null); }}>登录</button>
+          <button type="button" className={`rounded-md py-2 ${mode === 'register' ? 'bg-background font-medium shadow-sm' : 'text-muted-foreground'}`} onClick={() => { setMode('register'); setError(null); }}>创建账号</button>
+        </div>
+        <form className="space-y-4" onSubmit={submit}>
+          <label className="block text-sm">
+            <span className="mb-1.5 block font-medium">邮箱</span>
+            <input className="w-full rounded-md border border-border bg-background px-3 py-2.5 outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/20 transition-all transition-300" type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+          </label>
+          <label className="block text-sm">
+            <span className="mb-1.5 block font-medium">密码</span>
+            <input className="w-full rounded-md border border-border bg-background px-3 py-2.5 outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/20 transition-all transition-300" type="password" minLength={10} autoComplete={mode === 'register' ? 'new-password' : 'current-password'} value={password} onChange={(e) => setPassword(e.target.value)} />
+          </label>
+          {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+          <button type="submit" disabled={busy} className="w-full rounded-md bg-primary px-3 py-2.5 text-sm font-medium text-primary-foreground disabled:opacity-50">
+            {busy ? '请稍候…' : mode === 'register' ? '创建账号' : '登录'}
+          </button>
+        </form>
+        <p className="mt-4 text-center text-xs leading-relaxed text-muted-foreground">
+          当前不验证邮箱，也暂不支持忘记密码找回。请妥善保存密码。
+        </p>
+      </div>
+    </main>
+  );
+}
+
+async function removePendingAutoSend(): Promise<void> {
+  const latest = await chrome.storage.session.get(STORAGE_KEY_LATEST);
+  const id = latest[STORAGE_KEY_LATEST] as string | undefined;
+  if (!id) return;
+  const key = STORAGE_KEY_PREFIX + id;
+  const stored = (await chrome.storage.session.get(key))[key] as AskWithSelectionPayload | SelectionContext | undefined;
+  if (stored && 'ctx' in stored) await chrome.storage.session.set({ [key]: { ctx: stored.ctx } });
 }
 
 function NewThreadButton({ onClick }: { onClick: () => void }) {

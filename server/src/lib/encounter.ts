@@ -18,6 +18,7 @@ export type EncounterEventType =
 export type EncounterOutcome = 'understood' | 'still_unsure';
 
 export interface RecordEncounterInput {
+  userId: string;
   surfaceForm: string;
   itemKey: string;
   /** SelectionContext.id；passive_reencounter 传 null */
@@ -30,6 +31,7 @@ export async function recordEncounter(input: RecordEncounterInput): Promise<void
   try {
     await db.insert(encounterEvents).values({
       id: crypto.randomUUID(),
+      userId: input.userId,
       itemKey: input.itemKey,
       surfaceForm: input.surfaceForm,
       contextRef: input.contextRef,
@@ -49,6 +51,7 @@ export async function recordEncounter(input: RecordEncounterInput): Promise<void
  * 已经够用，可以避免打点风暴。
  */
 export async function recordPassiveReencounterDeduped(input: {
+  userId: string;
   surfaceForm: string;
   itemKey: string;
 }): Promise<{ written: boolean }> {
@@ -60,6 +63,7 @@ export async function recordPassiveReencounterDeduped(input: {
       .where(
         and(
           eq(encounterEvents.itemKey, input.itemKey),
+          eq(encounterEvents.userId, input.userId),
           eq(encounterEvents.eventType, 'passive_reencounter'),
           gte(encounterEvents.ts, oneDayAgo),
         ),
@@ -69,6 +73,7 @@ export async function recordPassiveReencounterDeduped(input: {
 
     await db.insert(encounterEvents).values({
       id: crypto.randomUUID(),
+      userId: input.userId,
       itemKey: input.itemKey,
       surfaceForm: input.surfaceForm,
       contextRef: null,
@@ -87,7 +92,7 @@ export async function recordPassiveReencounterDeduped(input: {
  *
  * 找不到时 fallback 到 "${lemma}#unknown"。
  */
-export async function findCanonicalItemKey(lemma: string): Promise<string> {
+export async function findCanonicalItemKey(userId: string, lemma: string): Promise<string> {
   try {
     const prefix = `${lemma}#`;
     // 取这个 lemma 的最近主动事件的 itemKey
@@ -97,6 +102,7 @@ export async function findCanonicalItemKey(lemma: string): Promise<string> {
       .where(
         and(
           sql`${encounterEvents.itemKey} LIKE ${prefix + '%'}`,
+          eq(encounterEvents.userId, userId),
           sql`${encounterEvents.eventType} IN ('lookup','deepchat','quick')`,
         ),
       )

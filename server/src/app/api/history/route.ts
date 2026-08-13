@@ -20,14 +20,18 @@
  *
  * 当前单用户本期不带 user_id 过滤，等加身份层再补。
  */
-import { sql, desc, lt, inArray } from 'drizzle-orm';
+import { sql, desc, lt, inArray, and, eq } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { encounterEvents, selectionContexts } from '@/db/schema';
+import { requireUser } from '@/lib/require-user';
 
 export const maxDuration = 10;
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: Request) {
+  const authResult = await requireUser(req);
+  if (!authResult.ok) return authResult.response;
+  const userId = authResult.user.id;
   const url = new URL(req.url);
   const limit = Math.min(Number(url.searchParams.get('limit')) || 20, 100);
   const beforeParam = url.searchParams.get('before');
@@ -46,7 +50,7 @@ export async function GET(req: Request) {
         lastContextRef: sql<string>`(ARRAY_AGG(${encounterEvents.contextRef} ORDER BY ${encounterEvents.ts} DESC))[1]`.as('last_context_ref'),
       })
       .from(encounterEvents)
-      .where(before ? lt(encounterEvents.ts, before) : undefined)
+      .where(and(eq(encounterEvents.userId, userId), before ? lt(encounterEvents.ts, before) : undefined))
       .groupBy(encounterEvents.itemKey)
       .orderBy(desc(sql`last_ts`))
       .limit(limit + 1);
@@ -65,7 +69,7 @@ export async function GET(req: Request) {
             url: selectionContexts.url,
           })
           .from(selectionContexts)
-          .where(inArray(selectionContexts.id, refs))
+          .where(and(eq(selectionContexts.userId, userId), inArray(selectionContexts.id, refs)))
       : [];
     const ctxById = new Map(ctxRows.map((c) => [c.id, c]));
 
