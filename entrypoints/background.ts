@@ -19,6 +19,7 @@ import type {
   BackgroundMessage,
   SelectionContext,
 } from '@/lib/messaging';
+import { authFetch } from '@/lib/auth';
 
 const BACKEND = import.meta.env.WXT_BACKEND_URL ?? 'http://localhost:4010';
 const STORAGE_KEY_LATEST = 'readsight:latest-selection-id';
@@ -134,7 +135,7 @@ export default defineBackground(() => {
     }
     if (message.type === 'PASSIVE_HITS') {
       // 转发给 /api/encounter；不需要等响应，content script 也不要回执
-      fetch(`${BACKEND}/api/encounter`, {
+      authFetch(`${BACKEND}/api/encounter`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ items: message.payload }),
@@ -178,7 +179,7 @@ export default defineBackground(() => {
 async function handleTranslateBlocks(payload: {
   blocks: Array<{ id: string; text: string }>;
 }) {
-  const res = await fetch(`${BACKEND}/api/translate`, {
+  const res = await authFetch(`${BACKEND}/api/translate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),

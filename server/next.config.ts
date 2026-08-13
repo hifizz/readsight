@@ -16,6 +16,7 @@ const nextConfig: NextConfig = {
           { key: 'Access-Control-Allow-Origin', value: allowOrigin },
           { key: 'Access-Control-Allow-Methods', value: 'GET,POST,PUT,DELETE,OPTIONS' },
           { key: 'Access-Control-Allow-Headers', value: 'Content-Type,Authorization' },
+          { key: 'Access-Control-Expose-Headers', value: 'set-auth-token' },
         ],
       },
     ];

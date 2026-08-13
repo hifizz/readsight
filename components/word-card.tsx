@@ -17,6 +17,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Loader2, ChevronDown } from 'lucide-react';
 import type { LookupResult, SelectionContext } from '@/lib/messaging';
 import { DictCard, DICT_CARD_CSS } from '@/components/dict-card';
+import { authFetch } from '@/lib/auth';
 
 interface WordCardProps {
   surfaceForm: string;
@@ -57,13 +58,13 @@ export function WordCard({ surfaceForm, backendUrl, selectionContext }: WordCard
     const ctrl = new AbortController();
 
     const promise = selectionContext
-      ? fetch(`${backendUrl}/api/lookup`, {
+      ? authFetch(`${backendUrl}/api/lookup`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ word: surfaceForm, selectionContext }),
           signal: ctrl.signal,
         })
-      : fetch(`${backendUrl}/api/lookup?word=${encodeURIComponent(surfaceForm)}`, {
+      : authFetch(`${backendUrl}/api/lookup?word=${encodeURIComponent(surfaceForm)}`, {
           signal: ctrl.signal,
         });
 
