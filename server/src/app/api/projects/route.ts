@@ -6,7 +6,7 @@ import { apiError } from '@/lib/http';
 import { requireUser } from '@/lib/require-user';
 
 const createProjectSchema = z.object({
-  name: z.string().trim().min(1).max(120),
+  name: z.string().trim().min(1).max(32),
   description: z.string().trim().max(2_000).optional().nullable(),
 });
 

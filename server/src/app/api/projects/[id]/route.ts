@@ -6,7 +6,7 @@ import { apiError, notFoundResponse } from '@/lib/http';
 import { requireUser } from '@/lib/require-user';
 
 const updateProjectSchema = z.object({
-  name: z.string().trim().min(1).max(120).optional(),
+  name: z.string().trim().min(1).max(32).optional(),
   description: z.string().trim().max(2_000).nullable().optional(),
   archived: z.boolean().optional(),
 }).refine((value) => Object.keys(value).length > 0, 'No project changes supplied.');
