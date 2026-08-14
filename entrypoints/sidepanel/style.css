@@ -1,74 +1,82 @@
 @import "tailwindcss";
+@import "tw-animate-css";
 @import "@fontsource-variable/geist";
 
-:root { color: #18342a; background: #f4fbf7; font-family: 'Geist Variable', ui-sans-serif, system-ui, sans-serif; }
-* { box-sizing: border-box; }
-html, body, #root { min-height: 100%; margin: 0; }
-button, input, textarea { font: inherit; }
-button { cursor: pointer; }
-button:disabled { cursor: wait; }
-.relata-shell { min-height: 100vh; padding: 16px; background: linear-gradient(180deg, #eff9f3 0%, #f8fcfa 42%); }
-.relata-center { display: grid; place-items: center; }
-.relata-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 4px 4px 15px; border-bottom: 1px solid #cfe4d7; }
-.relata-brand { margin: 0; color: #176743; font-size: 22px; font-weight: 720; letter-spacing: -0.04em; }
-.relata-slogan { margin: 4px 0 0; color: #5b7466; font-size: 12px; line-height: 1.45; }
-.relata-mark { display: inline-grid; width: 38px; height: 38px; place-items: center; border-radius: 12px; background: #177246; color: white; font-size: 19px; font-weight: 760; }
-.relata-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; padding: 15px 0; }
-.relata-primary-button, .relata-outline-button { min-height: 38px; border-radius: 10px; padding: 9px 12px; font-size: 13px; font-weight: 700; }
-.relata-primary-button { border: 0; background: #177246; color: white; }
-.relata-outline-button { border: 1px solid #acd0b9; background: #fff; color: #1b6844; }
-.relata-primary-button:disabled, .relata-outline-button:disabled { opacity: .6; }
-.relata-text-button { border: 0; padding: 4px; background: transparent; color: #21794e; font-size: 12px; font-weight: 650; }
-.relata-form, .relata-results { display: grid; gap: 11px; margin: 0 0 14px; border: 1px solid #cde5d7; border-radius: 14px; background: rgba(255,255,255,.92); padding: 14px; box-shadow: 0 7px 20px rgba(27, 82, 51, .07); }
-.relata-form h2 { margin: 0; font-size: 15px; letter-spacing: -.02em; }
-.relata-form label, .relata-auth-card label { display: grid; gap: 6px; color: #355646; font-size: 12px; font-weight: 650; }
-.relata-form input, .relata-form textarea, .relata-auth-card input { width: 100%; border: 1px solid #b9d7c5; border-radius: 9px; padding: 9px 10px; color: #18342a; background: white; outline-color: #228455; }
-.relata-form textarea { min-height: 62px; resize: vertical; }
-.relata-project-choices { display: grid; gap: 7px; margin: 0; border: 0; padding: 0; }
-.relata-project-choices legend { margin-bottom: 5px; color: #355646; font-size: 12px; font-weight: 650; }
-.relata-project-choices label { display: flex; align-items: center; gap: 8px; font-weight: 500; }
-.relata-project-choices input { width: 15px; height: 15px; }
-.relata-form-actions { display: flex; align-items: center; gap: 8px; }
-.relata-results { margin-top: 0; color: #315543; font-size: 13px; }
-.relata-results p { margin: 0; }
-.relata-list { display: grid; gap: 18px; padding: 5px 0 22px; }
-.relata-group { overflow: hidden; border: 1px solid #cde5d7; border-radius: 16px; background: rgba(255,255,255,.72); }
-.relata-group > .relata-eyebrow { padding: 14px 14px 0; }
-.relata-eyebrow { margin: 0; color: #218154; font-size: 10px; font-weight: 750; letter-spacing: .11em; }
-.relata-group h2 { margin: 4px 14px 10px; font-size: 18px; letter-spacing: -.035em; }
-.relata-source-list { display: grid; margin: 0; padding: 0; list-style: none; }
-.relata-source-row { display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; gap: 10px; min-height: 68px; padding: 9px 12px; border-top: 1px solid #e1eee5; }
-.relata-source-row:hover, .relata-source-row:focus-within { background: #f1f9f4; }
-.relata-favicon { width: 38px; height: 38px; border-radius: 11px; object-fit: contain; background: #eaf3ed; }
-.relata-favicon-fallback { display: grid; place-items: center; color: #2b7b53; font-size: 14px; font-weight: 800; }
-.relata-source-copy { min-width: 0; }
-.relata-source-title { display: block; overflow: hidden; color: #193328; font-size: 14px; font-weight: 680; line-height: 1.35; text-decoration: none; text-overflow: ellipsis; white-space: nowrap; }
-.relata-source-title:hover, .relata-source-title:focus-visible { color: #197447; text-decoration: underline; }
-.relata-source-copy p { overflow: hidden; margin: 3px 0 0; color: #627b6d; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.relata-row-action { border: 1px solid transparent; border-radius: 7px; padding: 5px 6px; background: transparent; color: #397157; font-size: 11px; font-weight: 650; }
-.relata-row-action:hover, .relata-row-action:focus-visible { border-color: #aad1b8; background: white; outline: none; }
-.relata-muted { margin: 0; color: #627b6d; font-size: 12px; line-height: 1.55; }
-.relata-group-empty { padding: 0 14px 14px; }
-.relata-error { margin: 0; color: #a42f2f; font-size: 12px; }
-.relata-page-error { margin-bottom: 12px; padding: 10px; border: 1px solid #edc7c7; border-radius: 10px; background: #fff8f8; }
-.relata-footer { margin: 0; padding: 10px 4px 2px; color: #739181; font-size: 11px; overflow-wrap: anywhere; }
-.relata-auth-card { display: flex; width: min(100%, 360px); flex-direction: column; align-items: stretch; gap: 12px; border: 1px solid #cde5d7; border-radius: 18px; background: rgba(255,255,255,.8); padding: 28px; box-shadow: 0 12px 28px rgba(27, 82, 51, .08); }
-.relata-auth-card .relata-mark, .relata-auth-card .relata-brand { align-self: center; }
-.relata-auth-card h1 { margin: 0; font-size: 24px; line-height: 1.2; letter-spacing: -0.04em; text-align: center; }
-.relata-auth-card .relata-slogan { text-align: center; }
-.relata-row-actions { display: flex; align-items: center; gap: 2px; }
-.relata-analysis { display: grid; gap: 12px; margin: 0 0 14px; padding: 14px; border: 1px solid #cde5d7; border-radius: 16px; background: rgba(255,255,255,.92); box-shadow: 0 7px 20px rgba(27,82,51,.07); }
-.relata-analysis-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.relata-analysis-header h2 { margin: 3px 0 0; font-size: 16px; }
-.relata-analysis-card { display: grid; gap: 9px; padding: 12px; border-radius: 13px; background: #edf7f1; color: #264a38; font-size: 12px; line-height: 1.5; }
-.relata-analysis-card p, .relata-analysis-card ul { margin: 0; }
-.relata-analysis-card ul { padding-left: 18px; }
-.relata-analysis select, .relata-analysis textarea { width: 100%; border: 1px solid #b9d7c5; border-radius: 9px; padding: 8px; background: white; color: #18342a; }
-.relata-analysis textarea { min-height: 70px; resize: vertical; }
-.relata-analysis form { display: grid; gap: 8px; }
-.relata-tags { display: flex; flex-wrap: wrap; gap: 5px; }
-.relata-tags span { padding: 3px 7px; border-radius: 999px; background: white; font-size: 11px; }
-.relata-conversation { display: grid; gap: 7px; max-height: 240px; overflow: auto; }
-.relata-message { padding: 8px; border-radius: 10px; white-space: pre-wrap; }
-.relata-message-user { background: white; }
-.relata-message-assistant { background: #dff1e6; }
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --background: oklch(0.99 0.004 150);
+  --foreground: oklch(0.20 0.018 150);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.20 0.018 150);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.20 0.018 150);
+  --primary: oklch(0.50 0.14 153);
+  --primary-foreground: oklch(0.99 0.004 150);
+  --secondary: oklch(0.955 0.012 150);
+  --secondary-foreground: oklch(0.30 0.045 150);
+  --muted: oklch(0.96 0.008 150);
+  --muted-foreground: oklch(0.52 0.025 150);
+  --accent: oklch(0.94 0.022 150);
+  --accent-foreground: oklch(0.28 0.055 150);
+  --destructive: oklch(0.58 0.22 27);
+  --border: oklch(0.90 0.012 150);
+  --input: oklch(0.88 0.016 150);
+  --ring: oklch(0.57 0.13 153);
+  --radius: 0.5rem;
+}
+
+.dark {
+  --background: oklch(0.17 0.015 150);
+  --foreground: oklch(0.95 0.01 150);
+  --card: oklch(0.20 0.017 150);
+  --card-foreground: oklch(0.95 0.01 150);
+  --popover: oklch(0.21 0.018 150);
+  --popover-foreground: oklch(0.95 0.01 150);
+  --primary: oklch(0.70 0.14 153);
+  --primary-foreground: oklch(0.16 0.02 150);
+  --secondary: oklch(0.25 0.018 150);
+  --secondary-foreground: oklch(0.93 0.01 150);
+  --muted: oklch(0.24 0.015 150);
+  --muted-foreground: oklch(0.68 0.02 150);
+  --accent: oklch(0.28 0.035 150);
+  --accent-foreground: oklch(0.95 0.01 150);
+  --destructive: oklch(0.68 0.19 25);
+  --border: oklch(1 0 0 / 12%);
+  --input: oklch(1 0 0 / 16%);
+  --ring: oklch(0.65 0.12 153);
+}
+
+@theme inline {
+  --font-sans: "Geist Variable", "Geist", ui-sans-serif, system-ui, sans-serif;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-xs: calc(var(--radius) * 0.5);
+  --radius-sm: calc(var(--radius) * 0.75);
+  --radius-md: calc(var(--radius) * 0.875);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.5);
+}
+
+@layer base {
+  * { @apply border-border outline-ring/50; }
+  html, body, #root { min-height: 100%; }
+  body { @apply m-0 bg-background font-sans text-foreground antialiased; }
+  button:not(:disabled), [role="button"]:not([aria-disabled="true"]) { cursor: pointer; }
+}
