@@ -1,49 +1,39 @@
-/**
- * Drizzle schema —— 对应 PRD §5.1 (SelectionContext) 与 §5.2 (EncounterEvent)，
- * 外加本期 /api/chat 写入的 chat_messages。
- *
- * 约定：
- *   - 主键全部 `text` 列，前端塞 ULID / UUID 字符串，不让 DB 操心 id 生成器
- *   - 嵌套对象（anchor、content）走 jsonb：保住灵活性，等需要查询再加列拆字段
- *   - 枚举使用 Postgres 原生 enum，跨表共享类型语义，
- *     drizzle-kit push 时自动建出 type
- *
- * 本期 schema 已经为 M2 (EncounterEvent 落库) / M4 (FSRS 调度) 留好坑位，
- * 但 `/api/chat` 暂时不写 encounter_events，PRD §5.2 落库逻辑留到下一迭代。
- */
 import {
-  pgSchema,
-  text,
-  jsonb,
-  timestamp,
-  integer,
   bigint,
   boolean,
+  check,
   date,
+  foreignKey,
   index,
-  uniqueIndex,
+  integer,
+  jsonb,
+  pgSchema,
   primaryKey,
+  text,
+  timestamp,
+  unique,
+  uniqueIndex,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 
-/**
- * 所有 Readsight 业务对象都放在独立 PostgreSQL schema，避免与同一 database
- * 中其他项目的 public 表、enum 和 Drizzle 迁移记录发生冲突。
- */
-export const readsightSchema = pgSchema('readsight');
+/** Relata 的所有持久化对象都隔离在专属 PostgreSQL schema 中。 */
+export const relataSchema = pgSchema('relata');
 
-// Better Auth core tables. Property names intentionally match Better Auth's
-// model keys; physical columns remain snake_case.
-export const user = readsightSchema.table('user', {
-  id: text('id').primaryKey(),
-  name: text('name').notNull(),
-  email: text('email').notNull().unique(),
-  emailVerified: boolean('email_verified').notNull().default(false),
-  image: text('image'),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-});
+// Better Auth tables use the property names that its Drizzle adapter expects.
+export const user = relataSchema.table(
+  'user',
+  {
+    id: text('id').primaryKey(),
+    name: text('name').notNull(),
+    email: text('email').notNull().unique(),
+    emailVerified: boolean('email_verified').notNull().default(false),
+    image: text('image'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+);
 
-export const session = readsightSchema.table(
+export const session = relataSchema.table(
   'session',
   {
     id: text('id').primaryKey(),
@@ -57,10 +47,10 @@ export const session = readsightSchema.table(
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
   },
-  (t) => [index('session_user_id_idx').on(t.userId)],
+  (table) => [index('session_user_id_idx').on(table.userId)],
 );
 
-export const account = readsightSchema.table(
+export const account = relataSchema.table(
   'account',
   {
     id: text('id').primaryKey(),
@@ -79,10 +69,10 @@ export const account = readsightSchema.table(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('account_user_id_idx').on(t.userId)],
+  (table) => [index('account_user_id_idx').on(table.userId)],
 );
 
-export const verification = readsightSchema.table(
+export const verification = relataSchema.table(
   'verification',
   {
     id: text('id').primaryKey(),
@@ -92,129 +82,18 @@ export const verification = readsightSchema.table(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('verification_identifier_idx').on(t.identifier)],
+  (table) => [index('verification_identifier_idx').on(table.identifier)],
 );
 
-export const rateLimit = readsightSchema.table('rate_limit', {
+export const rateLimit = relataSchema.table('rate_limit', {
   id: text('id').primaryKey(),
   key: text('key').notNull().unique(),
   count: integer('count').notNull(),
   lastRequest: bigint('last_request', { mode: 'number' }).notNull(),
 });
 
-export const eventTypeEnum = readsightSchema.enum('encounter_event_type', [
-  'lookup',
-  'quick',
-  'deepchat',
-  'passive_reencounter',
-]);
-
-export const outcomeEnum = readsightSchema.enum('encounter_outcome', [
-  'understood',
-  'still_unsure',
-]);
-
-export const selectionTypeEnum = readsightSchema.enum('selection_type', [
-  'word',
-  'phrase',
-  'sentence',
-  'multi',
-]);
-
-export const chatRoleEnum = readsightSchema.enum('chat_role', [
-  'system',
-  'user',
-  'assistant',
-  'tool',
-]);
-
-/**
- * PRD §5.1 SelectionContext —— 划词时一次抓全，是后续查询、深聊、学习记录
- * 共同的"唯一真相源"。
- */
-export const selectionContexts = readsightSchema.table('selection_contexts', {
-  id: text('id').primaryKey(),
-  userId: text('user_id').references(() => user.id, { onDelete: 'cascade' }),
-  capturedAt: timestamp('captured_at', { withTimezone: true }).notNull().defaultNow(),
-  url: text('url').notNull(),
-  title: text('title').notNull(),
-  siteId: text('site_id').notNull(),
-  heading: text('heading'),
-  selectionText: text('selection_text').notNull(),
-  selectionType: selectionTypeEnum('selection_type').notNull(),
-  // 选区在所在段落内的字符偏移（PRD §8.2 命门一计算结果），未来"回原文高亮"用。
-  rangeStart: integer('range_start').notNull(),
-  rangeEnd: integer('range_end').notNull(),
-  sentence: text('sentence').notNull(),
-  paragraph: text('paragraph').notNull(),
-  // TextQuoteSelector：{ exact, prefix, suffix }，可选 blockIndex。
-  // 序列化时直接灌 jsonb；DOM 改动后还能模糊匹配回原文。
-  anchor: jsonb('anchor')
-    .$type<{ quote: { exact: string; prefix: string; suffix: string }; blockIndex?: number }>()
-    .notNull(),
-}, (t) => [
-  index('selection_contexts_user_captured_idx').on(t.userId, t.capturedAt),
-  uniqueIndex('selection_contexts_id_user_idx').on(t.id, t.userId),
-]);
-
-/**
- * PRD §5.2 EncounterEvent —— 学习模型 (FSRS / HLR) 的事件流输入。
- * 每次查询 / 深聊 / 被动重逢都产生一条，按 (用户, itemKey) 聚合成时间序列。
- *
- *   - itemKey: 后端做轻量词形还原后的 lemma + pos，跨多次遇见同一个词
- *   - surfaceForm: 本次实际见到的形态 (loves / loved / loving 都对应 lemma=love)
- *   - contextRef: 指回 selection_contexts，删父行时这里级联清掉
- *   - eventType: lookup（点查）/ quick（按快捷按钮）/ deepchat（开侧栏深聊）/
- *                passive_reencounter（已查词在新文章中再次出现且未主动查 = 弱正信号）
- *   - outcome: LLM 软评估 "解释完是否真懂" 或显式反馈
- */
-export const encounterEvents = readsightSchema.table(
-  'encounter_events',
-  {
-    id: text('id').primaryKey(),
-    userId: text('user_id').references(() => user.id, { onDelete: 'cascade' }),
-    itemKey: text('item_key').notNull(),
-    surfaceForm: text('surface_form').notNull(),
-    // 主动事件 (lookup / deepchat / quick) 必有选区；被动重逢
-    // (passive_reencounter) 是浏览正文时扫到的词，没有用户主动选择 → nullable
-    contextRef: text('context_ref').references(
-      () => selectionContexts.id,
-      { onDelete: 'cascade' },
-    ),
-    eventType: eventTypeEnum('event_type').notNull(),
-    outcome: outcomeEnum('outcome'),
-    ts: timestamp('ts', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [
-    // 按 lemma 聚合的高频读，单列 btree 已够。
-    index('encounter_events_user_item_key_idx').on(t.userId, t.itemKey),
-    // 按时间线扫描所有事件（FSRS 算复习间隔 Δ 用）。
-    index('encounter_events_user_ts_idx').on(t.userId, t.ts),
-  ],
-);
-
-/**
- * 当前 /api/chat 的简化历史。PRD §8.3 "每个选区一条线程"的本期实现：
- * threadId 直接复用 selectionContextId（前端 selectionId）。
- * content 留 jsonb：assistant-ui 一条消息可能有 text / reasoning / tool-call 多 part。
- */
-export const chatMessages = readsightSchema.table(
-  'chat_messages',
-  {
-    id: text('id').primaryKey(),
-    userId: text('user_id').references(() => user.id, { onDelete: 'cascade' }),
-    threadId: text('thread_id').notNull(),
-    selectionContextId: text('selection_context_id').references(() => selectionContexts.id, {
-      onDelete: 'set null',
-    }),
-    role: chatRoleEnum('role').notNull(),
-    content: jsonb('content').$type<unknown>().notNull(),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [index('chat_messages_user_thread_idx').on(t.userId, t.threadId, t.createdAt)],
-);
-
-export const dailyUsage = readsightSchema.table(
+/** 所有消耗型 AI request 的用户级 UTC 日配额。 */
+export const dailyUsage = relataSchema.table(
   'daily_usage',
   {
     userId: text('user_id')
@@ -225,71 +104,268 @@ export const dailyUsage = readsightSchema.table(
     amount: integer('amount').notNull().default(0),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [primaryKey({ columns: [t.userId, t.usageDate, t.metric] })],
+  (table) => [primaryKey({ columns: [table.userId, table.usageDate, table.metric] })],
 );
 
-/**
- * Free Dictionary API 命中 / LLM 兜底生成的词典条目缓存。
- *
- * - PK 走 lemma（不是 surfaceForm）：用户选 "outed" / "outing" / "outs"
- *   会被 wink-lemmatizer 都还原成 "out"，共享同一条缓存。
- * - payload jsonb 直接存返回给前端 WordCard 的 LookupPayload，少做反序列化。
- * - source 标来源：`free-dictionary` / `llm` / `cache` —— 让 UI 在 LLM 兜底
- *   时显示 "estimated" 标记，对应 PRD §6.2 的"不让 AI 当主力"原则。
- */
-export const dictionaryEntries = readsightSchema.table('dictionary_entries', {
-  lemma: text('lemma').primaryKey(),
-  payload: jsonb('payload').notNull(),
-  source: text('source').notNull(),
-  cachedAt: timestamp('cached_at', { withTimezone: true }).notNull().defaultNow(),
-});
+export const projects = relataSchema.table(
+  'projects',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    description: text('description'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    archivedAt: timestamp('archived_at', { withTimezone: true }),
+  },
+  (table) => [
+    unique('projects_id_user_id_unique').on(table.id, table.userId),
+    index('projects_user_active_idx').on(table.userId, table.archivedAt, table.updatedAt),
+  ],
+);
 
-export type DictionaryEntryRow = typeof dictionaryEntries.$inferSelect;
-export type NewDictionaryEntryRow = typeof dictionaryEntries.$inferInsert;
+export const sources = relataSchema.table(
+  'sources',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    canonicalUrl: text('canonical_url').notNull(),
+    originalUrl: text('original_url').notNull(),
+    title: text('title').notNull(),
+    faviconUrl: text('favicon_url'),
+    sourceType: text('source_type').notNull().default('web'),
+    metadata: jsonb('metadata').notNull().default({}),
+    firstCapturedAt: timestamp('first_captured_at', { withTimezone: true }).notNull().defaultNow(),
+    lastCapturedAt: timestamp('last_captured_at', { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique('sources_id_user_id_unique').on(table.id, table.userId),
+    uniqueIndex('sources_user_canonical_url_unique').on(table.userId, table.canonicalUrl),
+    index('sources_user_last_captured_idx').on(table.userId, table.lastCapturedAt),
+  ],
+);
 
-/**
- * 全文翻译缓存（M3 PRD §7.1 全文双语对照用）。
- *
- * - PK = sha256(model + targetLang + originalText)：同段文本 + 同模型 +
- *   同目标语 → 共享同一条缓存。同一篇文章重看、不同 URL 同段引用都命中。
- * - originalText 存全文，便于排查 / 后续溯源；体积可接受（典型一段 100-300 字符）
- * - target_lang 留扩展位（本期只 'zh-CN'）
- * - model 存 LLM ID，迁移到新模型时旧缓存自然失效不污染
- */
-export const translations = readsightSchema.table('translations', {
-  hash: text('hash').primaryKey(),
-  originalText: text('original_text').notNull(),
-  zh: text('zh').notNull(),
-  targetLang: text('target_lang').notNull(),
-  model: text('model').notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-});
+export const captures = relataSchema.table(
+  'captures',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    sourceId: text('source_id')
+      .notNull()
+      .references(() => sources.id, { onDelete: 'cascade' }),
+    clientRequestId: text('client_request_id').notNull(),
+    captureMethod: text('capture_method').notNull(),
+    capturedUrl: text('captured_url'),
+    capturedTitle: text('captured_title'),
+    capturedFaviconUrl: text('captured_favicon_url'),
+    selection: jsonb('selection'),
+    capturedAt: timestamp('captured_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique('captures_id_user_id_unique').on(table.id, table.userId),
+    uniqueIndex('captures_user_client_request_unique').on(table.userId, table.clientRequestId),
+    index('captures_source_captured_at_idx').on(table.sourceId, table.capturedAt),
+    foreignKey({
+      columns: [table.userId, table.sourceId],
+      foreignColumns: [sources.userId, sources.id],
+      name: 'captures_source_same_user_fk',
+    }).onDelete('cascade'),
+  ],
+);
 
-export type TranslationRow = typeof translations.$inferSelect;
-export type NewTranslationRow = typeof translations.$inferInsert;
+export const intents = relataSchema.table(
+  'intents',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    captureId: text('capture_id')
+      .notNull()
+      .references(() => captures.id, { onDelete: 'cascade' }),
+    rawText: text('raw_text').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('intents_capture_unique').on(table.captureId),
+    index('intents_user_capture_idx').on(table.userId, table.captureId),
+    foreignKey({
+      columns: [table.userId, table.captureId],
+      foreignColumns: [captures.userId, captures.id],
+      name: 'intents_capture_same_user_fk',
+    }).onDelete('cascade'),
+  ],
+);
 
-/**
- * TTS 缓存（PRD §6.3 Tier 2 句子精听 / 控成本）。
- *
- * - PK = sha256(text + voice + model)，文本可能很长不适合做 PK
- * - audioHex: 历史云端 TTS 返回的 hex 编码 MP3；表保留用于兼容旧缓存和回滚
- * - 当前浏览器语音路径不再读写此表；保留旧数据以便兼容和回滚
- */
-export const ttsCache = readsightSchema.table('tts_cache', {
-  hash: text('hash').primaryKey(),
-  text: text('text').notNull(),
-  voice: text('voice').notNull(),
-  model: text('model').notNull(),
-  audioHex: text('audio_hex').notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-});
+export const projectSources = relataSchema.table(
+  'project_sources',
+  {
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    sourceId: text('source_id')
+      .notNull()
+      .references(() => sources.id, { onDelete: 'cascade' }),
+    linkedViaCaptureId: text('linked_via_capture_id').references(() => captures.id, {
+      onDelete: 'set null',
+    }),
+    linkedAt: timestamp('linked_at', { withTimezone: true }).notNull().defaultNow(),
+    sortOrder: integer('sort_order'),
+  },
+  (table) => [
+    primaryKey({ columns: [table.projectId, table.sourceId] }),
+    index('project_sources_user_source_idx').on(table.userId, table.sourceId),
+    index('project_sources_user_project_idx').on(table.userId, table.projectId),
+    foreignKey({
+      columns: [table.userId, table.projectId],
+      foreignColumns: [projects.userId, projects.id],
+      name: 'project_sources_project_same_user_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.userId, table.sourceId],
+      foreignColumns: [sources.userId, sources.id],
+      name: 'project_sources_source_same_user_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.userId, table.linkedViaCaptureId],
+      foreignColumns: [captures.userId, captures.id],
+      name: 'project_sources_capture_same_user_fk',
+    }).onDelete('set null'),
+  ],
+);
 
-export type TtsCacheRow = typeof ttsCache.$inferSelect;
-export type NewTtsCacheRow = typeof ttsCache.$inferInsert;
+export const analysisRuns = relataSchema.table(
+  'analysis_runs',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
+    sourceId: text('source_id').notNull().references(() => sources.id, { onDelete: 'cascade' }),
+    requestedByCaptureId: text('requested_by_capture_id').references(() => captures.id, { onDelete: 'set null' }),
+    status: text('status').notNull().default('queued'),
+    model: text('model').notNull(),
+    promptVersion: text('prompt_version').notNull(),
+    inputFingerprint: text('input_fingerprint').notNull(),
+    extractionMetadata: jsonb('extraction_metadata').notNull().default({}),
+    errorCode: text('error_code'),
+    startedAt: timestamp('started_at', { withTimezone: true }),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique('analysis_runs_id_user_id_unique').on(table.id, table.userId),
+    index('analysis_runs_source_created_idx').on(table.userId, table.sourceId, table.createdAt),
+    index('analysis_runs_status_idx').on(table.status, table.createdAt),
+    foreignKey({ columns: [table.userId, table.sourceId], foreignColumns: [sources.userId, sources.id], name: 'analysis_runs_source_same_user_fk' }).onDelete('cascade'),
+    foreignKey({ columns: [table.userId, table.requestedByCaptureId], foreignColumns: [captures.userId, captures.id], name: 'analysis_runs_capture_same_user_fk' }),
+    check('analysis_runs_status_check', sql`${table.status} in ('queued','running','completed','failed','cancelled')`),
+  ],
+);
 
-export type SelectionContextRow = typeof selectionContexts.$inferSelect;
-export type NewSelectionContextRow = typeof selectionContexts.$inferInsert;
-export type EncounterEventRow = typeof encounterEvents.$inferSelect;
-export type NewEncounterEventRow = typeof encounterEvents.$inferInsert;
-export type ChatMessageRow = typeof chatMessages.$inferSelect;
-export type NewChatMessageRow = typeof chatMessages.$inferInsert;
+export const sourceAnalyses = relataSchema.table(
+  'source_analyses',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
+    sourceId: text('source_id').notNull().references(() => sources.id, { onDelete: 'cascade' }),
+    analysisRunId: text('analysis_run_id').notNull().references(() => analysisRuns.id, { onDelete: 'cascade' }),
+    version: integer('version').notNull(),
+    summary: text('summary').notNull(),
+    keyPoints: jsonb('key_points').notNull().default([]),
+    topics: jsonb('topics').notNull().default([]),
+    entities: jsonb('entities').notNull().default([]),
+    contentType: text('content_type'),
+    intentInterpretations: jsonb('intent_interpretations').notNull().default([]),
+    model: text('model').notNull(),
+    promptVersion: text('prompt_version').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique('source_analyses_id_user_id_unique').on(table.id, table.userId),
+    unique('source_analyses_source_version_unique').on(table.sourceId, table.version),
+    uniqueIndex('source_analyses_run_unique').on(table.analysisRunId),
+    index('source_analyses_current_idx').on(table.userId, table.sourceId, table.version),
+    foreignKey({ columns: [table.userId, table.sourceId], foreignColumns: [sources.userId, sources.id], name: 'source_analyses_source_same_user_fk' }).onDelete('cascade'),
+    foreignKey({ columns: [table.userId, table.analysisRunId], foreignColumns: [analysisRuns.userId, analysisRuns.id], name: 'source_analyses_run_same_user_fk' }).onDelete('cascade'),
+  ],
+);
+
+export const projectInsights = relataSchema.table(
+  'project_insights',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
+    projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+    sourceId: text('source_id').notNull().references(() => sources.id, { onDelete: 'cascade' }),
+    sourceAnalysisId: text('source_analysis_id').notNull().references(() => sourceAnalyses.id, { onDelete: 'cascade' }),
+    version: integer('version').notNull(),
+    whyItMatters: text('why_it_matters').notNull(),
+    implications: jsonb('implications').notNull().default([]),
+    model: text('model').notNull(),
+    promptVersion: text('prompt_version').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique('project_insights_id_user_id_unique').on(table.id, table.userId),
+    unique('project_insights_version_unique').on(table.projectId, table.sourceId, table.version),
+    index('project_insights_current_idx').on(table.userId, table.projectId, table.sourceId, table.version),
+    foreignKey({ columns: [table.userId, table.projectId], foreignColumns: [projects.userId, projects.id], name: 'project_insights_project_same_user_fk' }).onDelete('cascade'),
+    foreignKey({ columns: [table.userId, table.sourceId], foreignColumns: [sources.userId, sources.id], name: 'project_insights_source_same_user_fk' }).onDelete('cascade'),
+    foreignKey({ columns: [table.userId, table.sourceAnalysisId], foreignColumns: [sourceAnalyses.userId, sourceAnalyses.id], name: 'project_insights_analysis_same_user_fk' }).onDelete('cascade'),
+  ],
+);
+
+export const threads = relataSchema.table(
+  'threads',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
+    sourceId: text('source_id').references(() => sources.id, { onDelete: 'cascade' }),
+    projectId: text('project_id').references(() => projects.id, { onDelete: 'cascade' }),
+    title: text('title'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    archivedAt: timestamp('archived_at', { withTimezone: true }),
+  },
+  (table) => [
+    unique('threads_id_user_id_unique').on(table.id, table.userId),
+    index('threads_context_idx').on(table.userId, table.sourceId, table.projectId, table.updatedAt),
+    foreignKey({ columns: [table.userId, table.sourceId], foreignColumns: [sources.userId, sources.id], name: 'threads_source_same_user_fk' }).onDelete('cascade'),
+    foreignKey({ columns: [table.userId, table.projectId], foreignColumns: [projects.userId, projects.id], name: 'threads_project_same_user_fk' }).onDelete('cascade'),
+    check('threads_context_check', sql`${table.sourceId} is not null or ${table.projectId} is not null`),
+  ],
+);
+
+export const messages = relataSchema.table(
+  'messages',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
+    threadId: text('thread_id').notNull().references(() => threads.id, { onDelete: 'cascade' }),
+    role: text('role').notNull(),
+    content: jsonb('content').notNull(),
+    sourceAnalysisId: text('source_analysis_id').references(() => sourceAnalyses.id, { onDelete: 'set null' }),
+    projectInsightId: text('project_insight_id').references(() => projectInsights.id, { onDelete: 'set null' }),
+    model: text('model'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique('messages_id_user_id_unique').on(table.id, table.userId),
+    index('messages_thread_created_idx').on(table.userId, table.threadId, table.createdAt),
+    foreignKey({ columns: [table.userId, table.threadId], foreignColumns: [threads.userId, threads.id], name: 'messages_thread_same_user_fk' }).onDelete('cascade'),
+    foreignKey({ columns: [table.userId, table.sourceAnalysisId], foreignColumns: [sourceAnalyses.userId, sourceAnalyses.id], name: 'messages_analysis_same_user_fk' }),
+    foreignKey({ columns: [table.userId, table.projectInsightId], foreignColumns: [projectInsights.userId, projectInsights.id], name: 'messages_insight_same_user_fk' }),
+    check('messages_role_check', sql`${table.role} in ('user','assistant','system','tool')`),
+  ],
+);

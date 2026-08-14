@@ -5,22 +5,15 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1780253836344,
-      "tag": "0000_slippery_tarantula",
+      "when": 1786729521670,
+      "tag": "0000_handy_mandarin",
       "breakpoints": true
     },
     {
       "idx": 1,
       "version": "7",
-      "when": 1786530110543,
-      "tag": "0001_glorious_wasp",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "7",
-      "when": 1786619371719,
-      "tag": "0002_polite_dust",
+      "when": 1786731146589,
+      "tag": "0001_careful_strong_guy",
       "breakpoints": true
     }
   ]

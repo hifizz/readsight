@@ -8,5 +8,6 @@
       "@/*": ["./*"]
     }
   },
+  "include": ["entrypoints/**/*", "components/**/*", "lib/**/*", "wxt.config.ts", ".wxt/wxt.d.ts"],
   "exclude": ["server", ".output", "node_modules"]
 }

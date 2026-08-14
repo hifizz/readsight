@@ -1,196 +1,74 @@
 @import "tailwindcss";
-@import "tw-animate-css";
-@import "shadcn/tailwind.css";
 @import "@fontsource-variable/geist";
-@import "tw-shimmer";
-@plugin "tailwind-scrollbar";
 
-@custom-variant dark (&:is(.dark *));
-
-html,
-body,
-#root {
-  margin: 0;
-  height: 100%;
-}
-
-@theme inline {
-  --font-heading: var(--font-sans);
-  --font-sans: 'Geist Variable', sans-serif;
-  --color-sidebar-ring: var(--sidebar-ring);
-  --color-sidebar-border: var(--sidebar-border);
-  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
-  --color-sidebar-accent: var(--sidebar-accent);
-  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
-  --color-sidebar-primary: var(--sidebar-primary);
-  --color-sidebar-foreground: var(--sidebar-foreground);
-  --color-sidebar: var(--sidebar);
-  --color-chart-5: var(--chart-5);
-  --color-chart-4: var(--chart-4);
-  --color-chart-3: var(--chart-3);
-  --color-chart-2: var(--chart-2);
-  --color-chart-1: var(--chart-1);
-  --color-ring: var(--ring);
-  --color-input: var(--input);
-  --color-border: var(--border);
-  --color-destructive: var(--destructive);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-accent: var(--accent);
-  --color-muted-foreground: var(--muted-foreground);
-  --color-muted: var(--muted);
-  --color-secondary-foreground: var(--secondary-foreground);
-  --color-secondary: var(--secondary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-primary: var(--primary);
-  --color-popover-foreground: var(--popover-foreground);
-  --color-popover: var(--popover);
-  --color-card-foreground: var(--card-foreground);
-  --color-card: var(--card);
-  --color-foreground: var(--foreground);
-  --color-background: var(--background);
-  --radius-sm: calc(var(--radius) * 0.6);
-  --radius-md: calc(var(--radius) * 0.8);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) * 1.4);
-  --radius-2xl: calc(var(--radius) * 1.8);
-  --radius-3xl: calc(var(--radius) * 2.2);
-  --radius-4xl: calc(var(--radius) * 2.6);
-}
-
-:root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
-}
-
-.dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
-}
-
-@layer base {
-  * {
-    @apply border-border outline-ring/50;
-  }
-  button:not(:disabled),
-  [role="button"]:not([aria-disabled="true"]) {
-    cursor: pointer;
-  }
-  body {
-    @apply bg-background text-foreground;
-  }
-  html {
-    @apply font-sans;
-  }
-}
-
-@layer components {
-  /*
-   * ThreadPrimitive.Viewport 是 assistant-ui 自动滚动所绑定的实际元素。
-   * 保持它作为唯一滚动容器，避免用第二层 ScrollArea 导致新消息无法稳定跟底；
-   * stable gutter 则在内容从未溢出变为溢出时预留相同宽度，防止消息列突然变窄。
-   */
-  .aui-thread-viewport {
-    scrollbar-gutter: stable;
-    scrollbar-width: thin;
-    scrollbar-color: transparent transparent;
-  }
-
-  .aui-thread-viewport:hover,
-  .aui-thread-viewport:focus-within {
-    scrollbar-color: color-mix(in oklab, var(--muted-foreground) 42%, transparent)
-      transparent;
-  }
-
-  .aui-thread-viewport::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
-  }
-
-  .aui-thread-viewport::-webkit-scrollbar-track {
-    background: transparent;
-  }
-
-  .aui-thread-viewport::-webkit-scrollbar-thumb {
-    border: 2px solid transparent;
-    border-radius: 9999px;
-    background-color: transparent;
-    background-clip: padding-box;
-    transition: background-color 160ms ease;
-  }
-
-  .aui-thread-viewport:hover::-webkit-scrollbar-thumb,
-  .aui-thread-viewport:focus-within::-webkit-scrollbar-thumb {
-    background-color: color-mix(
-      in oklab,
-      var(--muted-foreground) 42%,
-      transparent
-    );
-  }
-
-  .aui-thread-viewport::-webkit-scrollbar-thumb:hover {
-    background-color: color-mix(
-      in oklab,
-      var(--muted-foreground) 62%,
-      transparent
-    );
-  }
-}
+:root { color: #18342a; background: #f4fbf7; font-family: 'Geist Variable', ui-sans-serif, system-ui, sans-serif; }
+* { box-sizing: border-box; }
+html, body, #root { min-height: 100%; margin: 0; }
+button, input, textarea { font: inherit; }
+button { cursor: pointer; }
+button:disabled { cursor: wait; }
+.relata-shell { min-height: 100vh; padding: 16px; background: linear-gradient(180deg, #eff9f3 0%, #f8fcfa 42%); }
+.relata-center { display: grid; place-items: center; }
+.relata-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 4px 4px 15px; border-bottom: 1px solid #cfe4d7; }
+.relata-brand { margin: 0; color: #176743; font-size: 22px; font-weight: 720; letter-spacing: -0.04em; }
+.relata-slogan { margin: 4px 0 0; color: #5b7466; font-size: 12px; line-height: 1.45; }
+.relata-mark { display: inline-grid; width: 38px; height: 38px; place-items: center; border-radius: 12px; background: #177246; color: white; font-size: 19px; font-weight: 760; }
+.relata-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; padding: 15px 0; }
+.relata-primary-button, .relata-outline-button { min-height: 38px; border-radius: 10px; padding: 9px 12px; font-size: 13px; font-weight: 700; }
+.relata-primary-button { border: 0; background: #177246; color: white; }
+.relata-outline-button { border: 1px solid #acd0b9; background: #fff; color: #1b6844; }
+.relata-primary-button:disabled, .relata-outline-button:disabled { opacity: .6; }
+.relata-text-button { border: 0; padding: 4px; background: transparent; color: #21794e; font-size: 12px; font-weight: 650; }
+.relata-form, .relata-results { display: grid; gap: 11px; margin: 0 0 14px; border: 1px solid #cde5d7; border-radius: 14px; background: rgba(255,255,255,.92); padding: 14px; box-shadow: 0 7px 20px rgba(27, 82, 51, .07); }
+.relata-form h2 { margin: 0; font-size: 15px; letter-spacing: -.02em; }
+.relata-form label, .relata-auth-card label { display: grid; gap: 6px; color: #355646; font-size: 12px; font-weight: 650; }
+.relata-form input, .relata-form textarea, .relata-auth-card input { width: 100%; border: 1px solid #b9d7c5; border-radius: 9px; padding: 9px 10px; color: #18342a; background: white; outline-color: #228455; }
+.relata-form textarea { min-height: 62px; resize: vertical; }
+.relata-project-choices { display: grid; gap: 7px; margin: 0; border: 0; padding: 0; }
+.relata-project-choices legend { margin-bottom: 5px; color: #355646; font-size: 12px; font-weight: 650; }
+.relata-project-choices label { display: flex; align-items: center; gap: 8px; font-weight: 500; }
+.relata-project-choices input { width: 15px; height: 15px; }
+.relata-form-actions { display: flex; align-items: center; gap: 8px; }
+.relata-results { margin-top: 0; color: #315543; font-size: 13px; }
+.relata-results p { margin: 0; }
+.relata-list { display: grid; gap: 18px; padding: 5px 0 22px; }
+.relata-group { overflow: hidden; border: 1px solid #cde5d7; border-radius: 16px; background: rgba(255,255,255,.72); }
+.relata-group > .relata-eyebrow { padding: 14px 14px 0; }
+.relata-eyebrow { margin: 0; color: #218154; font-size: 10px; font-weight: 750; letter-spacing: .11em; }
+.relata-group h2 { margin: 4px 14px 10px; font-size: 18px; letter-spacing: -.035em; }
+.relata-source-list { display: grid; margin: 0; padding: 0; list-style: none; }
+.relata-source-row { display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; gap: 10px; min-height: 68px; padding: 9px 12px; border-top: 1px solid #e1eee5; }
+.relata-source-row:hover, .relata-source-row:focus-within { background: #f1f9f4; }
+.relata-favicon { width: 38px; height: 38px; border-radius: 11px; object-fit: contain; background: #eaf3ed; }
+.relata-favicon-fallback { display: grid; place-items: center; color: #2b7b53; font-size: 14px; font-weight: 800; }
+.relata-source-copy { min-width: 0; }
+.relata-source-title { display: block; overflow: hidden; color: #193328; font-size: 14px; font-weight: 680; line-height: 1.35; text-decoration: none; text-overflow: ellipsis; white-space: nowrap; }
+.relata-source-title:hover, .relata-source-title:focus-visible { color: #197447; text-decoration: underline; }
+.relata-source-copy p { overflow: hidden; margin: 3px 0 0; color: #627b6d; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.relata-row-action { border: 1px solid transparent; border-radius: 7px; padding: 5px 6px; background: transparent; color: #397157; font-size: 11px; font-weight: 650; }
+.relata-row-action:hover, .relata-row-action:focus-visible { border-color: #aad1b8; background: white; outline: none; }
+.relata-muted { margin: 0; color: #627b6d; font-size: 12px; line-height: 1.55; }
+.relata-group-empty { padding: 0 14px 14px; }
+.relata-error { margin: 0; color: #a42f2f; font-size: 12px; }
+.relata-page-error { margin-bottom: 12px; padding: 10px; border: 1px solid #edc7c7; border-radius: 10px; background: #fff8f8; }
+.relata-footer { margin: 0; padding: 10px 4px 2px; color: #739181; font-size: 11px; overflow-wrap: anywhere; }
+.relata-auth-card { display: flex; width: min(100%, 360px); flex-direction: column; align-items: stretch; gap: 12px; border: 1px solid #cde5d7; border-radius: 18px; background: rgba(255,255,255,.8); padding: 28px; box-shadow: 0 12px 28px rgba(27, 82, 51, .08); }
+.relata-auth-card .relata-mark, .relata-auth-card .relata-brand { align-self: center; }
+.relata-auth-card h1 { margin: 0; font-size: 24px; line-height: 1.2; letter-spacing: -0.04em; text-align: center; }
+.relata-auth-card .relata-slogan { text-align: center; }
+.relata-row-actions { display: flex; align-items: center; gap: 2px; }
+.relata-analysis { display: grid; gap: 12px; margin: 0 0 14px; padding: 14px; border: 1px solid #cde5d7; border-radius: 16px; background: rgba(255,255,255,.92); box-shadow: 0 7px 20px rgba(27,82,51,.07); }
+.relata-analysis-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.relata-analysis-header h2 { margin: 3px 0 0; font-size: 16px; }
+.relata-analysis-card { display: grid; gap: 9px; padding: 12px; border-radius: 13px; background: #edf7f1; color: #264a38; font-size: 12px; line-height: 1.5; }
+.relata-analysis-card p, .relata-analysis-card ul { margin: 0; }
+.relata-analysis-card ul { padding-left: 18px; }
+.relata-analysis select, .relata-analysis textarea { width: 100%; border: 1px solid #b9d7c5; border-radius: 9px; padding: 8px; background: white; color: #18342a; }
+.relata-analysis textarea { min-height: 70px; resize: vertical; }
+.relata-analysis form { display: grid; gap: 8px; }
+.relata-tags { display: flex; flex-wrap: wrap; gap: 5px; }
+.relata-tags span { padding: 3px 7px; border-radius: 999px; background: white; font-size: 11px; }
+.relata-conversation { display: grid; gap: 7px; max-height: 240px; overflow: auto; }
+.relata-message { padding: 8px; border-radius: 10px; white-space: pre-wrap; }
+.relata-message-user { background: white; }
+.relata-message-assistant { background: #dff1e6; }
