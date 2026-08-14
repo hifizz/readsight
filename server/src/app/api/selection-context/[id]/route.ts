@@ -7,14 +7,17 @@
  * B.4 用法：用户在 Records 列表点条目 → fetch 这个端点拿完整语境 → setState
  * 进 sidepanel 顶部 ContextCard。
  */
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { selectionContexts } from '@/db/schema';
 import type { SelectionContextDTO } from '@/lib/selection-context';
+import { requireUser } from '@/lib/require-user';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET(_req: Request, ctx: RouteContext<'/api/selection-context/[id]'>) {
+export async function GET(req: Request, ctx: RouteContext<'/api/selection-context/[id]'>) {
+  const authResult = await requireUser(req);
+  if (!authResult.ok) return authResult.response;
   const { id } = await ctx.params;
   if (!id) {
     return Response.json({ error: 'missing id' }, { status: 400 });
@@ -23,7 +26,7 @@ export async function GET(_req: Request, ctx: RouteContext<'/api/selection-conte
     const rows = await db
       .select()
       .from(selectionContexts)
-      .where(eq(selectionContexts.id, id))
+      .where(and(eq(selectionContexts.id, id), eq(selectionContexts.userId, authResult.user.id)))
       .limit(1);
     if (rows.length === 0) {
       return Response.json({ error: 'not_found' }, { status: 404 });

@@ -11,6 +11,8 @@
  * 其他块照常返回。
  */
 import { translateBatch } from '@/lib/translate';
+import { requireUser } from '@/lib/require-user';
+import { quotaExceededResponse, reserveUsage } from '@/lib/quota';
 
 export const maxDuration = 30;
 export const dynamic = 'force-dynamic';
@@ -25,6 +27,8 @@ interface PostBody {
 }
 
 export async function POST(req: Request) {
+  const authResult = await requireUser(req);
+  if (!authResult.ok) return authResult.response;
   let body: PostBody;
   try {
     body = (await req.json()) as PostBody;
@@ -40,6 +44,9 @@ export async function POST(req: Request) {
   if (body.blocks.length > 50) {
     return Response.json({ error: 'too_many_blocks (max 50)' }, { status: 400 });
   }
+  const submittedCharacters = body.blocks.reduce((sum, block) => sum + (block.text?.length ?? 0), 0);
+  const quota = await reserveUsage(authResult.user.id, 'translation_characters', submittedCharacters);
+  if (!quota.allowed) return quotaExceededResponse(quota);
 
   try {
     const texts = body.blocks.map((b) => b.text);

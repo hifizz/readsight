@@ -14,6 +14,7 @@
  * 返回 { written, skipped } 计数，方便前端调试。
  */
 import { findCanonicalItemKey, recordPassiveReencounterDeduped } from '@/lib/encounter';
+import { requireUser } from '@/lib/require-user';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,6 +23,8 @@ interface Body {
 }
 
 export async function POST(req: Request) {
+  const authResult = await requireUser(req);
+  if (!authResult.ok) return authResult.response;
   let body: Body;
   try {
     body = (await req.json()) as Body;
@@ -36,8 +39,9 @@ export async function POST(req: Request) {
   let skipped = 0;
   for (const item of body.items.slice(0, 200)) {  // 上限防恶意刷
     if (!item.lemma || !item.surfaceForm) continue;
-    const itemKey = await findCanonicalItemKey(item.lemma);
+    const itemKey = await findCanonicalItemKey(authResult.user.id, item.lemma);
     const r = await recordPassiveReencounterDeduped({
+      userId: authResult.user.id,
       surfaceForm: item.surfaceForm,
       itemKey,
     });

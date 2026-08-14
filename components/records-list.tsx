@@ -12,6 +12,7 @@
 import { useEffect, useState } from 'react';
 import { Loader2, BookOpen, Globe, ExternalLink } from 'lucide-react';
 import { windowAround } from '@/components/context-card';
+import { authFetch } from '@/lib/auth';
 
 export interface HistoryRecord {
   itemKey: string;
@@ -62,7 +63,7 @@ export function RecordsList({ backendUrl, onSelect, refreshToken = 0 }: RecordsL
   useEffect(() => {
     setState({ kind: 'loading' });
     const ctrl = new AbortController();
-    fetch(`${backendUrl}/api/history?limit=50`, { signal: ctrl.signal })
+    authFetch(`${backendUrl}/api/history?limit=50`, { signal: ctrl.signal })
       .then(async (res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return (await res.json()) as { items: HistoryRecord[] };

@@ -28,6 +28,17 @@
 
 环境变量：CLI 用官方 `coolify`（HTTP API + Bearer Token，跟 SSH 无关）。`coolify context list` 确认默认是 `singapore-vps`。
 
+### 用户认证变量
+
+正式部署用户系统前必须在 Coolify 配置：
+
+- `BETTER_AUTH_SECRET`：至少 32 字节的随机密钥，生产环境不得使用仓库或本地开发示例值。
+- `BETTER_AUTH_URL=https://readsight-api.zilin.im`
+- `AUTH_TRUSTED_ORIGINS=chrome-extension://<商店正式扩展ID>`（开发版 ID 需要单独加入时用逗号分隔）
+- 可选额度：`DAILY_CHAT_REQUESTS`、`DAILY_TRANSLATION_CHARACTERS`、`DAILY_LOOKUP_REQUESTS`。
+
+本期账户只支持邮箱密码，不验证邮箱、不发送邮件，也不支持忘记密码找回。首次迁移必须先备份数据库，然后按 `db:backfill-owner` → `db:finalize-ownership` 的顺序把原有单用户数据归属到明确的 owner 账号；不要在未确认 owner 邮箱或仍有 `user_id IS NULL` 的情况下执行 finalization。
+
 ## 3. 日常更新（最常用）
 
 **改了后端代码 → 只需 push，自动部署：**
@@ -45,6 +56,7 @@ coolify app logs lu2vcbh5j26vj9mn11wdh7n8 --lines 50      # 运行时日志（�
 ```bash
 curl -s -m 30 https://readsight-api.zilin.im/api/translate -X POST \
   -H 'content-type: application/json' \
+  -H "authorization: Bearer $READSIGHT_TEST_TOKEN" \
   -d '{"blocks":[{"id":"t1","text":"Hello, world."}]}'
 # 期望: {"results":[{"id":"t1","zh":"...","source":"llm|cache"}]}
 ```
@@ -82,7 +94,7 @@ coolify deploy uuid lu2vcbh5j26vj9mn11wdh7n8
 5. **Cloudflare 那条 DNS 用灰云（仅 DNS）**。橙云代理会卡 Let's Encrypt HTTP-01 签证书，也可能缓冲流式响应。
 6. **Next 16 需要 Node 20+**。已通过 env `NIXPACKS_NODE_VERSION=22` 解决（在 server/.env.production 里）。
 7. **native 模块要进 `onlyBuiltDependencies`**。pnpm 10/11 默认不跑依赖的 install/postinstall，`better-sqlite3` 的 `.node` 二进制就不会装，容器里报 `Could not locate the bindings file`、ECDICT 降级。已在 `server/pnpm-workspace.yaml` 把 `better-sqlite3` 加进 `onlyBuiltDependencies`。以后再加 native 依赖同理。
-8. **生产必须发 CORS 头**。`next.config.ts` 早期 `!isDev` 时 `headers()` 返回 `[]`，导致 `chrome-extension://` 的 sidepanel fetch `/api/*` 报 `No Access-Control-Allow-Origin`。已改成 dev/prod 都发 `ACAO`（默认 `*`，可用 env `CORS_ALLOW_ORIGIN` 覆盖收紧）。
+8. **生产必须发 CORS 头**。`next.config.ts` 早期 `!isDev` 时 `headers()` 返回 `[]`，导致 `chrome-extension://` 的 sidepanel fetch `/api/*` 报 `No Access-Control-Allow-Origin`。现在 dev/prod 都允许 `Authorization` 并暴露 Better Auth 的 `set-auth-token` 响应头；生产必须用 `CORS_ALLOW_ORIGIN` 和 `AUTH_TRUSTED_ORIGINS` 收紧到正式扩展 ID。CORS 不是鉴权边界，产品 API 仍逐请求校验 Bearer Session。
 
 ## 7. 扩展指向生产后端
 

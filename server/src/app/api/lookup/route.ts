@@ -11,16 +11,22 @@
 import { lookupWord } from '@/lib/lookup';
 import { upsertSelectionContext, type SelectionContextDTO } from '@/lib/selection-context';
 import { recordEncounter } from '@/lib/encounter';
+import { requireUser } from '@/lib/require-user';
+import { quotaExceededResponse, reserveUsage } from '@/lib/quota';
 
 export const maxDuration = 15;
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: Request) {
+  const authResult = await requireUser(req);
+  if (!authResult.ok) return authResult.response;
   const url = new URL(req.url);
   const word = url.searchParams.get('word');
   if (!word) {
     return Response.json({ error: 'missing ?word=' }, { status: 400 });
   }
+  const quota = await reserveUsage(authResult.user.id, 'lookup_requests');
+  if (!quota.allowed) return quotaExceededResponse(quota);
   try {
     const result = await lookupWord(word);
     return Response.json(result);
@@ -36,6 +42,8 @@ interface PostBody {
 }
 
 export async function POST(req: Request) {
+  const authResult = await requireUser(req);
+  if (!authResult.ok) return authResult.response;
   let body: PostBody;
   try {
     body = (await req.json()) as PostBody;
@@ -47,8 +55,19 @@ export async function POST(req: Request) {
   }
 
   // upsertSelectionContext 故意 await：后续 encounter 的外键依赖它存在
+  const quota = await reserveUsage(authResult.user.id, 'lookup_requests');
+  if (!quota.allowed) return quotaExceededResponse(quota);
+
   if (body.selectionContext) {
-    await upsertSelectionContext(body.selectionContext);
+    try {
+      await upsertSelectionContext(authResult.user.id, body.selectionContext);
+    } catch (err) {
+      const conflict = err instanceof Error && err.message === 'selection_context_conflict';
+      return Response.json(
+        { error: conflict ? 'selection_context_conflict' : 'selection_context_failed' },
+        { status: conflict ? 409 : 500 },
+      );
+    }
   }
 
   let result;
@@ -61,6 +80,7 @@ export async function POST(req: Request) {
 
   // 事件落库 fire-and-forget，不阻塞响应
   void recordEncounter({
+    userId: authResult.user.id,
     surfaceForm: body.word,
     itemKey: result.itemKey,
     contextRef: body.selectionContext?.id ?? null,
