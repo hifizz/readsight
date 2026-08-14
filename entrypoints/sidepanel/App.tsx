@@ -28,6 +28,7 @@ type AnalysisRun = { id: string; status: string; errorCode: string | null; creat
 type ProjectInsight = { id: string; version: number; whyItMatters: string; implications: string[] };
 type Thread = { id: string; title: string | null };
 type ThreadMessage = { id: string; role: string; content: Array<{ type: string; text?: string }>; sourceAnalysisId: string | null; projectInsightId: string | null };
+type InboxRange = 'today' | '7d' | '30d' | 'all';
 
 export default function App() {
   const [authState, setAuthState] = useState<AuthState>({ kind: 'loading' });
@@ -52,6 +53,9 @@ function LoadingView() {
 function RelataHome({ user, onSignedOut }: { user: AuthUser; onSignedOut: () => void }) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [sources, setSources] = useState<Source[]>([]);
+  const [inboxSources, setInboxSources] = useState<Source[]>([]);
+  const [inboxRange, setInboxRange] = useState<InboxRange>('today');
+  const [inboxLoading, setInboxLoading] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [captureOpen, setCaptureOpen] = useState(false);
@@ -60,7 +64,7 @@ function RelataHome({ user, onSignedOut }: { user: AuthUser; onSignedOut: () => 
   const [analyzingSource, setAnalyzingSource] = useState<Source | null>(null);
   const [results, setResults] = useState<CaptureResult[]>([]);
   const [signingOut, setSigningOut] = useState(false);
-  const refresh = useCallback(async () => {
+  const refreshBase = useCallback(async () => {
     setLoading(true); setError(null);
     try {
       const [projectResponse, sourceResponse] = await Promise.all([authFetch(`${BACKEND}/api/projects`), authFetch(`${BACKEND}/api/sources`)]);
@@ -70,21 +74,31 @@ function RelataHome({ user, onSignedOut }: { user: AuthUser; onSignedOut: () => 
     } catch (caught) { setError(caught instanceof Error ? caught.message : '无法加载保存内容。'); }
     finally { setLoading(false); }
   }, []);
-  useEffect(() => { void refresh(); }, [refresh]);
+  const refreshInbox = useCallback(async () => {
+    setInboxLoading(true); setError(null);
+    try {
+      const response = await authFetch(`${BACKEND}/api/sources?${inboxRangeQuery(inboxRange)}`);
+      if (!response.ok) throw new Error('无法加载 Inbox。');
+      setInboxSources(((await response.json()) as { sources: Source[] }).sources);
+    } catch (caught) { setError(caught instanceof Error ? caught.message : '无法加载 Inbox。'); }
+    finally { setInboxLoading(false); }
+  }, [inboxRange]);
+  const refreshAll = useCallback(() => Promise.all([refreshBase(), refreshInbox()]), [refreshBase, refreshInbox]);
+  useEffect(() => { void refreshBase(); }, [refreshBase]);
+  useEffect(() => { void refreshInbox(); }, [refreshInbox]);
   useEffect(() => {
-    const listener = (message: unknown) => { if (!isCaptureResultMessage(message)) return; setResults(message.payload); void refresh(); };
+    const listener = (message: unknown) => { if (!isCaptureResultMessage(message)) return; setResults(message.payload); void refreshAll(); };
     chrome.runtime.onMessage.addListener(listener);
     return () => chrome.runtime.onMessage.removeListener(listener);
-  }, [refresh]);
-  const inboxSources = useMemo(() => sources.filter((source) => source.projectIds.length === 0), [sources]);
+  }, [refreshAll]);
   const sourcesByProject = useMemo(() => new Map(projects.map((project) => [project.id, sources.filter((source) => source.projectIds.includes(project.id))])), [projects, sources]);
   const handleSignOut = async () => { setSigningOut(true); try { await signOut(BACKEND); } finally { onSignedOut(); setSigningOut(false); } };
   return <main className="min-h-screen bg-background text-foreground">
     <header className="sticky top-0 z-20 flex h-11 items-center gap-1 border-b bg-background/95 px-2 backdrop-blur"><h1 className="mr-auto pl-1 text-sm font-semibold">阅读列表</h1><HeaderAction label="保存当前链接" onClick={() => setCaptureOpen(true)}><BookmarkPlus /></HeaderAction><HeaderAction label="创建 Project" onClick={() => setProjectOpen(true)}><FolderPlus /></HeaderAction><UserMenu user={user} signingOut={signingOut} onSignOut={() => void handleSignOut()} /></header>
-    <div className="px-2 py-2">{results.length > 0 && <CaptureResults results={results} onDismiss={() => setResults([])} />}{error && <Alert variant="destructive" className="mb-2"><AlertDescription>{error}</AlertDescription></Alert>}{loading ? <SourceListSkeleton /> : <div className="space-y-4"><SourceGroup label="Inbox" count={inboxSources.length} sources={inboxSources} empty="未关联 Project 的链接会显示在这里。" onAnalyze={setAnalyzingSource} onEditMembership={setEditingSource} /><ProjectList projects={projects} sourcesByProject={sourcesByProject} onAnalyze={setAnalyzingSource} onEditMembership={setEditingSource} /></div>}</div>
-    <Dialog open={captureOpen} onOpenChange={setCaptureOpen}><DialogContent className="max-w-[calc(100%-1rem)] gap-3 p-3"><DialogHeader className="gap-1"><DialogTitle>保存当前链接</DialogTitle><DialogDescription>Intent 和 Project 都是可选的。</DialogDescription></DialogHeader><CaptureForm projects={projects} onResult={(next) => { setResults(next); if (next.some((item) => item.ok)) setCaptureOpen(false); void refresh(); }} /></DialogContent></Dialog>
-    <Dialog open={projectOpen} onOpenChange={setProjectOpen}><DialogContent className="max-w-[calc(100%-1rem)] gap-3 p-3"><DialogHeader className="gap-1"><DialogTitle>创建 Project</DialogTitle><DialogDescription>用于组织围绕同一目标保存的 Sources。</DialogDescription></DialogHeader><ProjectForm onCreated={() => { setProjectOpen(false); void refresh(); }} /></DialogContent></Dialog>
-    <Dialog open={editingSource !== null} onOpenChange={(open) => { if (!open) setEditingSource(null); }}>{editingSource && <DialogContent className="max-w-[calc(100%-1rem)] gap-3 p-3"><DialogHeader className="gap-1"><DialogTitle>关联 Project</DialogTitle><DialogDescription className="line-clamp-2">{editingSource.title}</DialogDescription></DialogHeader><MembershipForm source={editingSource} projects={projects} onSaved={() => { setEditingSource(null); void refresh(); }} /></DialogContent>}</Dialog>
+    <div className="px-2 py-2">{results.length > 0 && <CaptureResults results={results} onDismiss={() => setResults([])} />}{error && <Alert variant="destructive" className="mb-2"><AlertDescription>{error}</AlertDescription></Alert>}{loading ? <SourceListSkeleton /> : <div className="space-y-4"><InboxGroup range={inboxRange} onRangeChange={setInboxRange} loading={inboxLoading} sources={inboxSources} onAnalyze={setAnalyzingSource} onEditMembership={setEditingSource} /><ProjectList projects={projects} sourcesByProject={sourcesByProject} onAnalyze={setAnalyzingSource} onEditMembership={setEditingSource} /></div>}</div>
+    <Dialog open={captureOpen} onOpenChange={setCaptureOpen}><DialogContent className="max-w-[calc(100%-1rem)] gap-3 p-3"><DialogHeader className="gap-1"><DialogTitle>保存当前链接</DialogTitle><DialogDescription>Intent 和 Project 都是可选的。</DialogDescription></DialogHeader><CaptureForm projects={projects} onResult={(next) => { setResults(next); if (next.some((item) => item.ok)) setCaptureOpen(false); void refreshAll(); }} /></DialogContent></Dialog>
+    <Dialog open={projectOpen} onOpenChange={setProjectOpen}><DialogContent className="max-w-[calc(100%-1rem)] gap-3 p-3"><DialogHeader className="gap-1"><DialogTitle>创建 Project</DialogTitle><DialogDescription>用于组织围绕同一目标保存的 Sources。</DialogDescription></DialogHeader><ProjectForm onCreated={() => { setProjectOpen(false); void refreshBase(); }} /></DialogContent></Dialog>
+    <Dialog open={editingSource !== null} onOpenChange={(open) => { if (!open) setEditingSource(null); }}>{editingSource && <DialogContent className="max-w-[calc(100%-1rem)] gap-3 p-3"><DialogHeader className="gap-1"><DialogTitle>关联 Project</DialogTitle><DialogDescription className="line-clamp-2">{editingSource.title}</DialogDescription></DialogHeader><MembershipForm source={editingSource} projects={projects} onSaved={() => { setEditingSource(null); void refreshAll(); }} /></DialogContent>}</Dialog>
     <Dialog open={analyzingSource !== null} onOpenChange={(open) => { if (!open) setAnalyzingSource(null); }}>{analyzingSource && <AnalysisPanel source={analyzingSource} projects={projects} />}</Dialog>
   </main>;
 }
@@ -97,8 +111,8 @@ function UserMenu({ user, signingOut, onSignOut }: { user: AuthUser; signingOut:
   return <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" className="rounded-full" aria-label="用户菜单"><Avatar size="sm"><AvatarImage src={(user as AuthUser & { image?: string }).image} /><AvatarFallback>{initials(user.name || user.email)}</AvatarFallback></Avatar></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="w-52"><DropdownMenuLabel className="grid gap-0.5"><span className="truncate text-foreground">{user.name}</span><span className="truncate font-normal">{user.email}</span></DropdownMenuLabel><DropdownMenuSeparator /><DropdownMenuItem variant="destructive" disabled={signingOut} onSelect={onSignOut}><LogOut />{signingOut ? '退出中…' : '退出登录'}</DropdownMenuItem></DropdownMenuContent></DropdownMenu>;
 }
 
-function SourceGroup({ label, count, sources, empty, onAnalyze, onEditMembership }: { label: string; count: number; sources: Source[]; empty: string; onAnalyze: (source: Source) => void; onEditMembership: (source: Source) => void }) {
-  return <section><div className="flex h-7 items-center px-1"><h2 className="min-w-0 truncate text-xs font-medium">{label}</h2><span className="ml-1.5 text-[10px] tabular-nums text-muted-foreground">{count}</span></div>{sources.length === 0 ? <p className="px-1 py-3 text-xs text-muted-foreground">{empty}</p> : <ul className="divide-y divide-border">{sources.map((source) => <SourceRow key={source.id} source={source} onAnalyze={onAnalyze} onEditMembership={onEditMembership} />)}</ul>}</section>;
+function InboxGroup({ range, onRangeChange, loading, sources, onAnalyze, onEditMembership }: { range: InboxRange; onRangeChange: (range: InboxRange) => void; loading: boolean; sources: Source[]; onAnalyze: (source: Source) => void; onEditMembership: (source: Source) => void }) {
+  return <section><div className="flex h-7 items-center px-1"><h2 className="text-xs font-medium">Inbox</h2><span className="ml-1.5 text-[10px] tabular-nums text-muted-foreground">{sources.length}</span><Select value={range} onValueChange={(value) => onRangeChange(value as InboxRange)}><SelectTrigger size="sm" aria-label="Inbox 时间范围" className="ml-auto h-6 w-auto gap-0.5 border-transparent bg-transparent px-1.5 text-[10px] text-muted-foreground shadow-none hover:bg-muted focus-visible:border-transparent focus-visible:bg-muted focus-visible:ring-0"><SelectValue /></SelectTrigger><SelectContent align="end" className="min-w-24"><SelectItem value="today">今天</SelectItem><SelectItem value="7d">近 7 天</SelectItem><SelectItem value="30d">近 30 天</SelectItem><SelectItem value="all">全部</SelectItem></SelectContent></Select></div>{loading ? <div className="space-y-1 py-1"><Skeleton className="h-10 w-full" /><Skeleton className="h-10 w-full" /></div> : sources.length === 0 ? <p className="px-1 py-3 text-xs text-muted-foreground">这个时间范围内没有未归类链接。</p> : <ul className="divide-y divide-border">{sources.map((source) => <SourceRow key={source.id} source={source} onAnalyze={onAnalyze} onEditMembership={onEditMembership} />)}</ul>}</section>;
 }
 
 function ProjectList({ projects, sourcesByProject, onAnalyze, onEditMembership }: { projects: Project[]; sourcesByProject: Map<string, Source[]>; onAnalyze: (source: Source) => void; onEditMembership: (source: Source) => void }) {
@@ -168,4 +182,18 @@ function isCaptureResultMessage(value: unknown): value is { type: 'RELATA_CAPTUR
 function domainFor(url: string): string { try { return new URL(url).hostname; } catch { return url; } }
 function canonicalForComparison(value: string): string { try { const url = new URL(value); url.hash = ''; return url.toString(); } catch { return value; } }
 function initials(value: string): string { return value.split(/\s+|@/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase()).join('') || 'R'; }
+function inboxRangeQuery(range: InboxRange): string {
+  const params = new URLSearchParams({ inbox: 'true' });
+  if (range === 'all') return params.toString();
+  const from = new Date();
+  from.setHours(0, 0, 0, 0);
+  if (range === '7d') from.setDate(from.getDate() - 6);
+  if (range === '30d') from.setDate(from.getDate() - 29);
+  const to = new Date();
+  to.setHours(0, 0, 0, 0);
+  to.setDate(to.getDate() + 1);
+  params.set('from', from.toISOString());
+  params.set('to', to.toISOString());
+  return params.toString();
+}
 function relativeTime(value: string): string { const seconds = Math.max(0, Math.round((Date.now() - new Date(value).getTime()) / 1_000)); if (seconds < 60) return '刚刚'; const minutes = Math.round(seconds / 60); if (minutes < 60) return `${minutes} 分钟前`; const hours = Math.round(minutes / 60); if (hours < 24) return `${hours} 小时前`; return `${Math.round(hours / 24)} 天前`; }

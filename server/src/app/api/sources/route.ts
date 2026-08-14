@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull } from 'drizzle-orm';
+import { and, desc, eq, gte, isNull, lt } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { projectSources, projects, sources } from '@/db/schema';
 import { notFoundResponse } from '@/lib/http';
@@ -11,6 +11,11 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const inbox = url.searchParams.get('inbox') === 'true';
   const projectId = url.searchParams.get('projectId');
+  const from = parseTimeBoundary(url.searchParams.get('from'));
+  const to = parseTimeBoundary(url.searchParams.get('to'));
+  if (from === false || to === false || (from && to && from >= to)) {
+    return Response.json({ error: 'invalid_time_range', message: 'Provide a valid [from, to) time range.' }, { status: 400 });
+  }
   if (inbox && projectId) {
     return Response.json({ error: 'invalid_filter', message: 'Choose Inbox or one Project.' }, { status: 400 });
   }
@@ -24,7 +29,15 @@ export async function GET(request: Request) {
   }
 
   const [sourceRows, memberships] = await Promise.all([
-    db.select().from(sources).where(eq(sources.userId, current.user.id)).orderBy(desc(sources.lastCapturedAt)),
+    db
+      .select()
+      .from(sources)
+      .where(and(
+        eq(sources.userId, current.user.id),
+        from ? gte(sources.lastCapturedAt, from) : undefined,
+        to ? lt(sources.lastCapturedAt, to) : undefined,
+      ))
+      .orderBy(desc(sources.lastCapturedAt)),
     db
       .select({ sourceId: projectSources.sourceId, projectId: projectSources.projectId })
       .from(projectSources)
@@ -47,4 +60,10 @@ export async function GET(request: Request) {
       return projectId ? source.projectIds.includes(projectId) : true;
     });
   return Response.json({ sources: sourceStates });
+}
+
+function parseTimeBoundary(value: string | null): Date | null | false {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? false : parsed;
 }
