@@ -50,8 +50,8 @@ export function InboxGroup({
 } & SourceActions) {
   return (
     <section>
-      <div className="flex h-7 items-center ">
-        <h2 className="text-xs font-medium px-3">Inbox</h2>
+      <div className="flex py-2 px-3 items-center ">
+        <h2 className="text-xs font-medium ">Inbox</h2>
         <span className="ml-1.5 text-xs tabular-nums text-muted-foreground">
           {sources.length}
         </span>
@@ -100,8 +100,8 @@ export function ProjectList({
 } & SourceActions) {
   return (
     <section>
-      <div className="flex h-7 items-center ">
-        <h2 className="text-xs font-medium px-3">Projects</h2>
+      <div className="flex py-2 px-3 items-center">
+        <h2 className="text-xs font-medium ">Projects</h2>
         <span className="ml-1.5 text-xs tabular-nums text-muted-foreground">
           {projects.length}
         </span>
@@ -156,7 +156,7 @@ function ProjectListItem({
         </Button>
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <div className="ml-5 border-l pl-1 border-dashed">
+        <div className="ml-3 border-l pl-1 border-dashed">
           {sources.length === 0 ? (
             <p className="px-2 py-2 text-[11px] text-muted-foreground">
               暂无链接。
