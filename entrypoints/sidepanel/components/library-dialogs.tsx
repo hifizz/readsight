@@ -1,0 +1,390 @@
+import { useState } from 'react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import { authFetch } from '@/lib/auth';
+import {
+  BACKEND,
+  captureItemFromTab,
+  submitCaptures,
+  type CaptureResult
+} from '@/lib/capture';
+import type { Project, Source } from '../types';
+
+type OpenDialogProps = {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+};
+
+export function CaptureDialog({
+  open,
+  onOpenChange,
+  projects,
+  onCaptured
+}: OpenDialogProps & {
+  projects: Project[];
+  onCaptured: (results: CaptureResult[]) => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-[calc(100%-1rem)] gap-3 p-3">
+        <DialogHeader className="gap-1">
+          <DialogTitle>保存当前链接</DialogTitle>
+          <DialogDescription>Intent 和 Project 都是可选的。</DialogDescription>
+        </DialogHeader>
+        <CaptureForm projects={projects} onResult={onCaptured} />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+export function CreateProjectDialog({
+  open,
+  onOpenChange,
+  onCreated
+}: OpenDialogProps & { onCreated: () => void }) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-[calc(100%-1rem)] gap-3 p-3">
+        <DialogHeader className="gap-1">
+          <DialogTitle>创建 Project</DialogTitle>
+          <DialogDescription>用于组织围绕同一目标保存的 Sources。</DialogDescription>
+        </DialogHeader>
+        <ProjectForm onCreated={onCreated} />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+export function MembershipDialog({
+  source,
+  projects,
+  onOpenChange,
+  onSaved
+}: {
+  source: Source | null;
+  projects: Project[];
+  onOpenChange: (open: boolean) => void;
+  onSaved: () => void;
+}) {
+  return (
+    <Dialog open={source !== null} onOpenChange={onOpenChange}>
+      {source && (
+        <DialogContent className="max-w-[calc(100%-1rem)] gap-3 p-3">
+          <DialogHeader className="gap-1">
+            <DialogTitle>关联 Project</DialogTitle>
+            <DialogDescription className="line-clamp-2">
+              {source.title}
+            </DialogDescription>
+          </DialogHeader>
+          <MembershipForm source={source} projects={projects} onSaved={onSaved} />
+        </DialogContent>
+      )}
+    </Dialog>
+  );
+}
+
+function CaptureForm({
+  projects,
+  onResult
+}: {
+  projects: Project[];
+  onResult: (results: CaptureResult[]) => void;
+}) {
+  const [intent, setIntent] = useState('');
+  const [projectIds, setProjectIds] = useState<string[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setSaving(true);
+    setError(null);
+    try {
+      const [tab] = await chrome.tabs.query({
+        active: true,
+        currentWindow: true
+      });
+      const item = tab ? captureItemFromTab(tab, 'side_panel') : null;
+      if (!item) throw new Error('当前标签页无法保存。');
+      onResult(
+        await submitCaptures([
+          { ...item, intent: intent.trim() || undefined, projectIds }
+        ])
+      );
+    } catch (caught) {
+      setError(
+        caught instanceof Error ? caught.message : '当前标签页无法保存。'
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <form className="grid gap-3" onSubmit={(event) => void submit(event)}>
+      <div className="grid gap-1.5">
+        <Label htmlFor="capture-intent">
+          Intent <span className="font-normal text-muted-foreground">可选</span>
+        </Label>
+        <Textarea
+          id="capture-intent"
+          value={intent}
+          onChange={(event) => setIntent(event.target.value)}
+          placeholder="为什么保存它？"
+          className="min-h-16 text-xs"
+          maxLength={4_000}
+        />
+      </div>
+      <ProjectCheckboxes
+        projects={projects}
+        selected={projectIds}
+        onChange={setProjectIds}
+      />
+      <FormError error={error} />
+      <DialogFormFooter
+        submitting={saving}
+        submitLabel="保存链接"
+        pendingLabel="保存中…"
+      />
+    </form>
+  );
+}
+
+function ProjectForm({ onCreated }: { onCreated: () => void }) {
+  const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const submit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setSaving(true);
+    setError(null);
+    try {
+      const response = await authFetch(`${BACKEND}/api/projects`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, description: description.trim() || null })
+      });
+      if (!response.ok) throw new Error('无法创建 Project。');
+      onCreated();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '无法创建 Project。');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <form className="grid gap-3" onSubmit={(event) => void submit(event)}>
+      <div className="grid gap-1.5">
+        <Label htmlFor="project-name">名称</Label>
+        <Input
+          id="project-name"
+          value={name}
+          onChange={(event) => setName(event.target.value)}
+          maxLength={32}
+          autoFocus
+          required
+        />
+        <p className="text-[10px] text-muted-foreground">最多 32 个字符</p>
+      </div>
+      <div className="grid gap-1.5">
+        <Label htmlFor="project-description">
+          说明 <span className="font-normal text-muted-foreground">可选</span>
+        </Label>
+        <Textarea
+          id="project-description"
+          value={description}
+          onChange={(event) => setDescription(event.target.value)}
+          maxLength={2_000}
+          className="min-h-16 text-xs"
+        />
+      </div>
+      <FormError error={error} />
+      <DialogFormFooter
+        submitting={saving}
+        submitLabel="创建 Project"
+        pendingLabel="创建中…"
+        submitDisabled={!name.trim()}
+      />
+    </form>
+  );
+}
+
+function MembershipForm({
+  source,
+  projects,
+  onSaved
+}: {
+  source: Source;
+  projects: Project[];
+  onSaved: () => void;
+}) {
+  const [selected, setSelected] = useState(source.projectIds);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const submit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setSaving(true);
+    setError(null);
+    try {
+      const response = await authFetch(
+        `${BACKEND}/api/sources/${source.id}/projects`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ projectIds: selected })
+        }
+      );
+      if (!response.ok) throw new Error('无法更新 Project 关联。');
+      onSaved();
+    } catch (caught) {
+      setError(
+        caught instanceof Error ? caught.message : '无法更新 Project 关联。'
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <form className="grid gap-3" onSubmit={(event) => void submit(event)}>
+      <ProjectCheckboxes
+        projects={projects}
+        selected={selected}
+        onChange={setSelected}
+      />
+      <p className="text-[11px] text-muted-foreground">
+        不选择任何 Project 时，Source 会回到 Inbox。
+      </p>
+      <FormError error={error} />
+      <DialogFormFooter
+        submitting={saving}
+        submitLabel="保存关联"
+        pendingLabel="保存中…"
+      />
+    </form>
+  );
+}
+
+function ProjectCheckboxes({
+  projects,
+  selected,
+  onChange
+}: {
+  projects: Project[];
+  selected: string[];
+  onChange: (ids: string[]) => void;
+}) {
+  if (projects.length === 0) {
+    return <p className="text-xs text-muted-foreground">尚无 Project，将保存到 Inbox。</p>;
+  }
+
+  return (
+    <fieldset className="grid gap-1.5">
+      <legend className="mb-1 text-xs font-medium">关联到 Project</legend>
+      {projects.map((project) => {
+        const checked = selected.includes(project.id);
+        return (
+          <Label
+            key={project.id}
+            className="flex h-7 cursor-pointer items-center gap-2 rounded-md px-1.5 font-normal hover:bg-muted"
+          >
+            <Checkbox
+              checked={checked}
+              onCheckedChange={() =>
+                onChange(
+                  checked
+                    ? selected.filter((id) => id !== project.id)
+                    : [...selected, project.id]
+                )
+              }
+            />
+            <span className="truncate">{project.name}</span>
+          </Label>
+        );
+      })}
+    </fieldset>
+  );
+}
+
+function FormError({ error }: { error: string | null }) {
+  return error ? (
+    <Alert variant="destructive">
+      <AlertDescription>{error}</AlertDescription>
+    </Alert>
+  ) : null;
+}
+
+function DialogFormFooter({
+  submitting,
+  submitLabel,
+  pendingLabel,
+  submitDisabled = false
+}: {
+  submitting: boolean;
+  submitLabel: string;
+  pendingLabel: string;
+  submitDisabled?: boolean;
+}) {
+  return (
+    <DialogFooter className="-mx-3 -mb-3 p-3">
+      <DialogClose asChild>
+        <Button type="button" variant="outline" size="sm">
+          取消
+        </Button>
+      </DialogClose>
+      <Button type="submit" size="sm" disabled={submitting || submitDisabled}>
+        {submitting ? pendingLabel : submitLabel}
+      </Button>
+    </DialogFooter>
+  );
+}
+
+export function CaptureResults({
+  results,
+  onDismiss
+}: {
+  results: CaptureResult[];
+  onDismiss: () => void;
+}) {
+  const successes = results.filter((item) => item.ok).length;
+  const failures = results.filter((item) => !item.ok);
+  return (
+    <Alert className="mb-2">
+      <AlertDescription className="flex items-start gap-2">
+        <span className="flex-1">
+          {successes ? `已保存 ${successes} 个标签页。` : '没有标签页被保存。'}
+          {failures.map((item) => (
+            <span key={item.clientRequestId} className="block text-destructive">
+              {item.message}
+            </span>
+          ))}
+        </span>
+        <Button
+          size="icon-xs"
+          variant="ghost"
+          onClick={onDismiss}
+          aria-label="关闭结果"
+        >
+          ×
+        </Button>
+      </AlertDescription>
+    </Alert>
+  );
+}
