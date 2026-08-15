@@ -32,7 +32,7 @@ export function SidePanelHeader({
   onSignOut: () => void;
 }) {
   return (
-    <header className="sticky top-0 z-20 flex h-11 items-center gap-1 border-b bg-background/95 px-2 backdrop-blur">
+    <header className="sticky top-0 z-20 flex items-center border-b border-b-[0.5px] bg-background/95 px-2 py-1 backdrop-blur">
       <h1 className="mr-auto pl-1 text-sm font-semibold">阅读列表</h1>
       <HeaderAction label="保存当前链接" onClick={onCapture}>
         <BookmarkPlus />
@@ -41,6 +41,7 @@ export function SidePanelHeader({
         <FolderPlus />
       </HeaderAction>
       <UserMenu
+        className="ml-1"
         user={user}
         signingOut={signingOut}
         onSignOut={onSignOut}
@@ -64,6 +65,7 @@ function HeaderAction({
         <Button
           size="icon-sm"
           variant="ghost"
+          className="text-neutral-500"
           onClick={onClick}
           aria-label={label}
         >
@@ -78,11 +80,13 @@ function HeaderAction({
 function UserMenu({
   user,
   signingOut,
-  onSignOut
+  onSignOut,
+  className
 }: {
   user: AuthUser;
   signingOut: boolean;
   onSignOut: () => void;
+  className?: string;
 }) {
   return (
     <DropdownMenu>
@@ -90,7 +94,7 @@ function UserMenu({
         <Button
           variant="ghost"
           size="icon-sm"
-          className="rounded-full"
+          className={`rounded-full ${className}`}
           aria-label="用户菜单"
         >
           <Avatar size="sm">

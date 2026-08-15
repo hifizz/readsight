@@ -69,7 +69,7 @@ export function RelataHome({
         onCreateProject={() => setProjectOpen(true)}
         onSignOut={() => void handleSignOut()}
       />
-      <div className="px-2 py-2">
+      <div className="py-2">
         {results.length > 0 && (
           <CaptureResults results={results} onDismiss={() => setResults([])} />
         )}

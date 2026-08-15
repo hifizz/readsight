@@ -50,9 +50,9 @@ export function InboxGroup({
 } & SourceActions) {
   return (
     <section>
-      <div className="flex h-7 items-center px-1">
-        <h2 className="text-xs font-medium">Inbox</h2>
-        <span className="ml-1.5 text-[10px] tabular-nums text-muted-foreground">
+      <div className="flex h-7 items-center ">
+        <h2 className="text-xs font-medium px-3">Inbox</h2>
+        <span className="ml-1.5 text-xs tabular-nums text-muted-foreground">
           {sources.length}
         </span>
         <Select
@@ -100,9 +100,9 @@ export function ProjectList({
 } & SourceActions) {
   return (
     <section>
-      <div className="flex h-7 items-center px-1">
-        <h2 className="text-xs font-medium">Projects</h2>
-        <span className="ml-1.5 text-[10px] tabular-nums text-muted-foreground">
+      <div className="flex h-7 items-center ">
+        <h2 className="text-xs font-medium px-3">Projects</h2>
+        <span className="ml-1.5 text-xs tabular-nums text-muted-foreground">
           {projects.length}
         </span>
       </div>
@@ -111,7 +111,7 @@ export function ProjectList({
           创建 Project 后会显示在这里。
         </p>
       ) : (
-        <div className="divide-y divide-border">
+        <div className="">
           {projects.map((project) => (
             <ProjectListItem
               key={project.id}
@@ -140,7 +140,7 @@ function ProjectListItem({
       <CollapsibleTrigger asChild>
         <Button
           variant="ghost"
-          className="h-10 w-full justify-start gap-2 rounded-none px-1.5 text-xs font-normal"
+          className="w-full justify-start gap-1 rounded-lg px-2 py-2 text-xs font-normal "
           title={project.name}
         >
           <ChevronRight
@@ -156,7 +156,7 @@ function ProjectListItem({
         </Button>
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <div className="ml-5 border-l pl-1.5">
+        <div className="ml-5 border-l pl-1 border-dashed">
           {sources.length === 0 ? (
             <p className="px-2 py-2 text-[11px] text-muted-foreground">
               暂无链接。
@@ -172,7 +172,7 @@ function ProjectListItem({
 
 function SourceRows({ sources, ...actions }: { sources: Source[] } & SourceActions) {
   return (
-    <ul className="divide-y divide-border">
+    <ul className="">
       {sources.map((source) => (
         <SourceRow key={source.id} source={source} {...actions} />
       ))}
@@ -186,7 +186,7 @@ function SourceRow({
   onEditMembership
 }: { source: Source } & SourceActions) {
   return (
-    <li className="group flex min-h-12 items-center gap-2 px-1 py-1.5 hover:bg-muted/50">
+    <li className="group flex items-center gap-2 px-2 py-1.5 hover:bg-muted rounded-lg cursor-pointer">
       {source.faviconUrl ? (
         <img
           className="size-7 rounded-md bg-muted object-contain"
@@ -223,19 +223,19 @@ function SourceRow({
             <MoreHorizontal />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-40">
-          <DropdownMenuItem onSelect={() => onAnalyze(source)}>
-            <Sparkles />
+        <DropdownMenuContent align="end" >
+          <DropdownMenuItem onSelect={() => onAnalyze(source)} className="text-xs text-muted-foreground">
+            <Sparkles className='size-3.5' />
             分析与讨论
           </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => onEditMembership(source)}>
-            <FolderCog />
+          <DropdownMenuItem onSelect={() => onEditMembership(source)} className="text-xs text-muted-foreground">
+            <FolderCog className='size-3.5' />
             关联 Project
           </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem asChild>
+          {/* <DropdownMenuSeparator /> */}
+          <DropdownMenuItem asChild className="text-xs text-muted-foreground">
             <a href={source.originalUrl} target="_blank" rel="noreferrer">
-              <ExternalLink />
+              <ExternalLink className='size-3.5' />
               打开链接
             </a>
           </DropdownMenuItem>
