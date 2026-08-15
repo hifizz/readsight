@@ -81,7 +81,7 @@ export function RelataHome({
         {library.loading ? (
           <SourceListSkeleton />
         ) : (
-          <div className="space-y-4">
+          <div className="space-y-2">
             <InboxGroup
               range={library.inboxRange}
               onRangeChange={library.setInboxRange}

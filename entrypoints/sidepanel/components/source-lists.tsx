@@ -185,29 +185,44 @@ function SourceRow({
   onAnalyze,
   onEditMembership
 }: { source: Source } & SourceActions) {
+  const avatarClass = `grid size-7 shrink-0 place-items-center rounded-md bg-muted text-[10px] font-semibold text-muted-foreground`;
+  const openSource = () => void chrome.tabs.create({ url: source.originalUrl });
   return (
-    <li className="group flex items-center gap-2 px-2 py-1.5 hover:bg-muted rounded-lg cursor-pointer">
+    <li
+      className="group flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      role="link"
+      tabIndex={0}
+      title={source.title}
+      onClick={(event) => {
+        if ((event.target as HTMLElement).closest('[data-source-row-action]')) {
+          return;
+        }
+        openSource();
+      }}
+      onKeyDown={(event) => {
+        if (event.target === event.currentTarget && event.key === 'Enter') {
+          openSource();
+        }
+      }}
+    >
+      {/* 对齐 Chrome Reading List：点击列表项任意非操作区域都应直接在新标签页打开来源。 */}
       {source.faviconUrl ? (
-        <img
-          className="size-7 rounded-md bg-muted object-contain"
+        <span className={avatarClass}>
+          <img
+          className="size-4 rounded-md bg-muted object-contain"
           src={source.faviconUrl}
           alt=""
         />
+        </span>
       ) : (
-        <span className="grid size-7 shrink-0 place-items-center rounded-md bg-muted text-[10px] font-semibold text-muted-foreground">
+        <span className={avatarClass}>
           R
         </span>
       )}
       <div className="min-w-0 flex-1">
-        <a
-          className="block truncate text-xs font-medium hover:underline"
-          href={source.originalUrl}
-          target="_blank"
-          rel="noreferrer"
-          title={source.title}
-        >
+        <span className="block truncate text-xs font-medium">
           {source.title}
-        </a>
+        </span>
         <p className="truncate text-[10px] text-muted-foreground">
           {domainFor(source.originalUrl)} · {relativeTime(source.lastCapturedAt)}
         </p>
@@ -219,6 +234,9 @@ function SourceRow({
             variant="ghost"
             className="opacity-60 group-hover:opacity-100"
             aria-label={`${source.title} 的更多操作`}
+            data-source-row-action
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => event.stopPropagation()}
           >
             <MoreHorizontal />
           </Button>
