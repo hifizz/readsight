@@ -1,5 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
+  BookmarkPlus,
+  Check,
   ChevronRight,
   Copy,
   ExternalLink,
@@ -7,6 +9,7 @@ import {
   Folder,
   FolderCog,
   FolderMinus,
+  LoaderCircle,
   MoreHorizontal,
   NotebookPen,
   Pencil,
@@ -35,6 +38,11 @@ import {
   SelectValue
 } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger
+} from '@/components/ui/tooltip';
 import type { InboxRange, Project, Source } from '../types';
 import { domainFor, relativeTime } from '../utils';
 
@@ -47,6 +55,7 @@ type SourceActions = {
   onRemoveFromProject: (source: Source, projectId: string) => void;
 };
 type ProjectActions = {
+  onSaveCurrentToProject: (project: Project) => Promise<boolean>;
   onRenameProject: (project: Project) => void;
   onDeleteProject: (project: Project) => void;
 };
@@ -104,7 +113,6 @@ export function SourceIdentity({
 
 export function SourceActionsMenu({
   source,
-  showInboxCopyActions = false,
   projectContextId,
   onAnalyze,
   onEditMembership,
@@ -114,7 +122,6 @@ export function SourceActionsMenu({
   onRemoveFromProject
 }: {
   source: Source;
-  showInboxCopyActions?: boolean;
   projectContextId?: string;
 } & SourceActions) {
   const itemClass = 'h-7 gap-1.5 px-2 py-1 text-xs';
@@ -134,7 +141,7 @@ export function SourceActionsMenu({
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="end"
-        className="min-w-36 p-1 text-xs"
+        className="min-w-60 p-1 text-xs"
         data-source-row-action
         onClick={(event) => event.stopPropagation()}
         onPointerDown={(event) => event.stopPropagation()}
@@ -181,24 +188,20 @@ export function SourceActionsMenu({
             移出 Project
           </DropdownMenuItem>
         )}
-        {showInboxCopyActions && (
-          <>
-            <DropdownMenuItem
-              className={itemClass}
-              onSelect={() => void copySource(source, false)}
-            >
-              <Copy className="size-3" />
-              复制链接
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              className={itemClass}
-              onSelect={() => void copySource(source, true)}
-            >
-              <FileText className="size-3" />
-              复制链接与标题
-            </DropdownMenuItem>
-          </>
-        )}
+        <DropdownMenuItem
+          className={itemClass}
+          onSelect={() => void copySource(source, false)}
+        >
+          <Copy className="size-3" />
+          复制链接
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          className={itemClass}
+          onSelect={() => void copySource(source, true)}
+        >
+          <FileText className="size-3" />
+          复制链接与标题（Markdown 格式）
+        </DropdownMenuItem>
         <DropdownMenuItem className={itemClass} asChild>
           <a href={source.originalUrl} target="_blank" rel="noreferrer">
             <ExternalLink className="size-3" />
@@ -258,7 +261,7 @@ export function InboxGroup({
       {loading ? (
         <Skeleton className="h-20" />
       ) : sources.length ? (
-        <SourceRows sources={sources} showInboxCopyActions {...actions} />
+        <SourceRows sources={sources} {...actions} />
       ) : (
         <p className="px-1 py-3 text-xs text-muted-foreground">
           这个时间范围内没有未归类链接。
@@ -300,12 +303,48 @@ export function ProjectList({
 function ProjectItem({
   project,
   sources,
+  onSaveCurrentToProject,
   onRenameProject,
   onDeleteProject,
   ...actions
 }: { project: Project; sources: Source[] } & SourceActions & ProjectActions) {
   const [open, setOpen] = useState(false);
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle');
+  const resetSaveStateTimer = useRef<number | null>(null);
   const projectItemClass = 'h-7 gap-1.5 px-2 py-1 text-xs';
+
+  useEffect(
+    () => () => {
+      if (resetSaveStateTimer.current !== null) {
+        window.clearTimeout(resetSaveStateTimer.current);
+      }
+    },
+    []
+  );
+
+  const saveCurrentLink = async () => {
+    if (saveState === 'saving') return;
+    if (resetSaveStateTimer.current !== null) {
+      window.clearTimeout(resetSaveStateTimer.current);
+      resetSaveStateTimer.current = null;
+    }
+    setSaveState('saving');
+    try {
+      const saved = await onSaveCurrentToProject(project);
+      if (!saved) {
+        setSaveState('idle');
+        return;
+      }
+      setSaveState('saved');
+      resetSaveStateTimer.current = window.setTimeout(() => {
+        setSaveState('idle');
+        resetSaveStateTimer.current = null;
+      }, 1_200);
+    } catch {
+      setSaveState('idle');
+    }
+  };
+
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
       <div className="group flex items-center">
@@ -320,6 +359,41 @@ function ProjectItem({
             <span className="ml-auto text-[10px]">{sources.length}</span>
           </Button>
         </CollapsibleTrigger>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              size="icon-xs"
+              variant="ghost"
+              className="text-muted-foreground"
+              disabled={saveState === 'saving'}
+              aria-live="polite"
+              aria-label={
+                saveState === 'saving'
+                  ? `正在保存到「${project.name}」`
+                  : saveState === 'saved'
+                    ? `已保存到「${project.name}」`
+                    : `保存当前链接到「${project.name}」`
+              }
+              onClick={(event) => {
+                event.stopPropagation();
+                void saveCurrentLink();
+              }}
+            >
+              {saveState === 'saving' ? (
+                <LoaderCircle className="size-3 animate-spin" />
+              ) : saveState === 'saved' ? (
+                <Check className="size-3 text-primary" />
+              ) : (
+                <BookmarkPlus className="size-3" />
+              )}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>
+            {saveState === 'saved'
+              ? `已保存到「${project.name}」`
+              : `保存当前链接到「${project.name}」`}
+          </TooltipContent>
+        </Tooltip>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
@@ -410,12 +484,10 @@ function escapeMarkdownUrl(value: string) {
 
 function SourceRows({
   sources,
-  showInboxCopyActions = false,
   projectContextId,
   ...actions
 }: {
   sources: Source[];
-  showInboxCopyActions?: boolean;
   projectContextId?: string;
 } & SourceActions) {
   return (
@@ -445,7 +517,6 @@ function SourceRows({
           <SourceIdentity source={source} showMemo />
           <SourceActionsMenu
             source={source}
-            showInboxCopyActions={showInboxCopyActions}
             projectContextId={projectContextId}
             {...actions}
           />

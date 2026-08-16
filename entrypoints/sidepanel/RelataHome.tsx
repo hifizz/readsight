@@ -1,7 +1,12 @@
 import { useEffect, useState } from 'react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { authFetch, signOut, type AuthUser } from '@/lib/auth';
-import { BACKEND, type SourceSaveResult } from '@/lib/source-saving';
+import {
+  BACKEND,
+  saveSources,
+  sourceItemFromTab,
+  type SourceSaveResult
+} from '@/lib/source-saving';
 import { AnalysisDialog } from './components/analysis-panel';
 import {
   CaptureDialog,
@@ -62,6 +67,34 @@ export function RelataHome({
     setResults(next.filter((item) => !item.ok));
     if (next.some((item) => item.ok)) setCaptureOpen(false);
     library.applySaveResults(next);
+  };
+  const saveCurrentToProject = async (project: Project) => {
+    setResults([]);
+    let next: SourceSaveResult[];
+    try {
+      const [tab] = await chrome.tabs.query({
+        active: true,
+        currentWindow: true
+      });
+      const item = tab ? sourceItemFromTab(tab) : null;
+      if (!item) throw new Error('当前标签页无法保存。');
+      next = await saveSources([
+        { ...item, addProjectIds: [project.id] }
+      ]);
+    } catch (caught) {
+      next = [
+        {
+          ok: false,
+          clientRequestId: null,
+          error: 'source_save_failed',
+          message:
+            caught instanceof Error ? caught.message : '当前标签页无法保存。'
+        }
+      ];
+    }
+    setResults(next.filter((item) => !item.ok));
+    library.applySaveResults(next);
+    return next.some((item) => item.ok);
   };
   const togglePin = async (source: Source) => {
     const response = await authFetch(`${BACKEND}/api/sources/${source.id}`, {
@@ -166,6 +199,7 @@ export function RelataHome({
               projects={library.projects}
               sourcesByProject={library.sourcesByProject}
               {...sourceActions}
+              onSaveCurrentToProject={saveCurrentToProject}
               onRenameProject={(project) => void renameProject(project)}
               onDeleteProject={(project) => void deleteProject(project)}
             />

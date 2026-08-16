@@ -76,6 +76,8 @@ raw link text，必须另行定义 identity source；本 change 不伪造 Chrome
 - `memo` 为 `null`：仅由明确的删除 Memo 操作使用。
 - `projectIds` 缺席：保留已有 memberships；新 Source 留在 Inbox。
 - `projectIds` 为 array：以该 array 替换 memberships；空 array 明确移回 Inbox。
+- `addProjectIds` 为 array：只追加缺失的 memberships，保留已有 memberships。
+- `projectIds` 和 `addProjectIds` 不得在同一个 save item 中同时提供。
 
 重复保存可以刷新 title、original URL 和 favicon 等当前 metadata，但必须保持 `addedAt` 不变。
 它不会增加保存次数，也不会产生用户可见或持久化的 history。
@@ -107,10 +109,21 @@ Inbox 和 Project 中的每个 SourceItem 使用同一组 contextual actions：
 - `Add memo` / `Edit memo`
 - `关联 Project`
 - `分析与讨论`
+- `复制链接`
+- `复制链接与标题（Markdown 格式）`
 - `打开链接`
 
 Pin、Memo 或 Project mutation 成功后，同一 Source 在 Inbox、全部 Project occurrences 和 Pinned
 section 中必须同步，不得出现局部旧状态。
+
+### 从 Project 快速保存当前链接
+
+Project row 在 item count 和更多菜单之间提供独立的“保存当前链接”按钮。点击不展开或
+收起 Project，不打开 Capture dialog，直接将 active tab 的 Source 追加到该 Project。
+
+按钮在请求期间显示 loading，成功后短暂显示 check。成功结果直接更新本地 library store，不执行
+整体 refresh，不显示成功 banner，不自动展开 Project。已存在的 Source 必须保留其他 Project
+memberships；已属于目标 Project 时不产生重复 item。
 
 ## Schema
 
@@ -216,7 +229,7 @@ SourceActionsMenu
 
 - `SourceAvatar` 唯一负责 favicon、fallback、尺寸和共同视觉样式。
 - `SourceIdentity` 组合 avatar、title 和 domain。
-- `SourceActionsMenu` 统一 analyze、Project、Pin/Unpin、Add/Edit Memo 和 open actions。
+- `SourceActionsMenu` 统一 analyze、Project、Pin/Unpin、Add/Edit Memo、copy 和 open actions。
 - `SourceRow` 保留 list row 的点击与键盘语义。
 - `PinnedSourcePreview` 组合 identity、actions 和 metadata，不复用 `<li>` row DOM。
 

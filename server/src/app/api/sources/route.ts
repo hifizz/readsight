@@ -4,26 +4,25 @@ import { db } from '@/db/client';
 import { projectSources, projects, sources } from '@/db/schema';
 import { apiError, notFoundResponse } from '@/lib/http';
 import { requireUser } from '@/lib/require-user';
+import {
+  normalizeProjectUpdate,
+  sourceSaveInputSchema,
+  type SourceSaveInput,
+} from '@/lib/source-save-contract';
 import { sourceUrlKey } from '@/lib/urls';
 
-const saveInputSchema = z.object({
-  clientRequestId: z.string().trim().min(1).max(200), url: z.string().trim().min(1).max(8_000),
-  title: z.string().trim().max(1_000).optional(), faviconUrl: z.string().url().max(8_000).optional().nullable(),
-  memo: z.string().max(4_000).optional().nullable(), projectIds: z.array(z.string().uuid()).max(50).optional(),
-  metadata: z.record(z.string(), z.unknown()).optional(),
-});
 const saveRequestSchema = z.object({ items: z.array(z.unknown()).min(1).max(50) });
-type SaveInput = z.infer<typeof saveInputSchema>;
 
-async function saveOne(userId: string, input: SaveInput) {
+async function saveOne(userId: string, input: SourceSaveInput) {
   const urlKey = sourceUrlKey(input.url);
-  const projectIds = input.projectIds === undefined ? undefined : [...new Set(input.projectIds)];
+  const { projectIds, addProjectIds } = normalizeProjectUpdate(input);
   const memo = input.memo === null ? null : input.memo?.trim() || undefined;
   const title = input.title?.trim() || new URL(urlKey).hostname;
   return db.transaction(async (tx) => {
-    if (projectIds?.length) {
-      const owned = await tx.select({ id: projects.id }).from(projects).where(and(eq(projects.userId, userId), isNull(projects.archivedAt), inArray(projects.id, projectIds)));
-      if (owned.length !== projectIds.length) throw new Error('invalid_project');
+    const requestedProjectIds = projectIds ?? addProjectIds;
+    if (requestedProjectIds?.length) {
+      const owned = await tx.select({ id: projects.id }).from(projects).where(and(eq(projects.userId, userId), isNull(projects.archivedAt), inArray(projects.id, requestedProjectIds)));
+      if (owned.length !== requestedProjectIds.length) throw new Error('invalid_project');
     }
     const now = new Date();
     const insertValues = { id: crypto.randomUUID(), userId, urlKey, originalUrl: urlKey, title, faviconUrl: input.faviconUrl ?? null, sourceType: 'web', metadata: input.metadata ?? {}, memo: memo ?? null, addedAt: now, createdAt: now, updatedAt: now };
@@ -34,7 +33,10 @@ async function saveOne(userId: string, input: SaveInput) {
       await tx.delete(projectSources).where(and(eq(projectSources.userId, userId), eq(projectSources.sourceId, source.id)));
       if (projectIds.length) await tx.insert(projectSources).values(projectIds.map((projectId) => ({ userId, projectId, sourceId: source.id, linkedAt: now })));
     }
-    const memberships = projectIds ?? (await tx.select({ projectId: projectSources.projectId }).from(projectSources).where(and(eq(projectSources.userId, userId), eq(projectSources.sourceId, source.id)))).map((row) => row.projectId);
+    if (addProjectIds?.length) {
+      await tx.insert(projectSources).values(addProjectIds.map((projectId) => ({ userId, projectId, sourceId: source.id, linkedAt: now }))).onConflictDoNothing();
+    }
+    const memberships = (await tx.select({ projectId: projectSources.projectId }).from(projectSources).where(and(eq(projectSources.userId, userId), eq(projectSources.sourceId, source.id)))).map((row) => row.projectId);
     return { ok: true as const, clientRequestId: input.clientRequestId, source, projectIds: memberships };
   });
 }
@@ -45,7 +47,7 @@ export async function POST(request: Request) {
   if (!body.success) return apiError(400, 'invalid_source_save_request', 'Provide between 1 and 50 source items.');
   const results = [];
   for (const item of body.data.items) {
-    const parsed = saveInputSchema.safeParse(item);
+    const parsed = sourceSaveInputSchema.safeParse(item);
     const clientRequestId = typeof item === 'object' && item && 'clientRequestId' in item && typeof item.clientRequestId === 'string' ? item.clientRequestId : null;
     if (!parsed.success) { results.push({ ok: false, clientRequestId, error: 'invalid_source', message: 'This tab does not have valid source metadata.' }); continue; }
     try { results.push(await saveOne(current.user.id, parsed.data)); }

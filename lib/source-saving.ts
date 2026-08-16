@@ -1,7 +1,15 @@
 import { authFetch } from '@/lib/auth';
 
 export const BACKEND = import.meta.env.WXT_BACKEND_URL ?? 'http://localhost:4010';
-export type SourceSaveItem = { clientRequestId: string; url: string; title?: string; faviconUrl?: string; memo?: string | null; projectIds?: string[] };
+export type SourceSaveItem = {
+  clientRequestId: string;
+  url: string;
+  title?: string;
+  faviconUrl?: string;
+  memo?: string | null;
+  projectIds?: string[];
+  addProjectIds?: string[];
+};
 export type SavedSource = { id: string; urlKey: string; originalUrl: string; title: string; faviconUrl: string | null; memo: string | null; pinnedAt: string | null; addedAt: string };
 export type SourceSaveResult =
   | { ok: true; clientRequestId: string; source: SavedSource; projectIds: string[] }

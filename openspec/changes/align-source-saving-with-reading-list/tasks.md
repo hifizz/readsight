@@ -19,6 +19,7 @@
   Capture history。
 - [x] 2.4 验证相同 URL-key duplicate save 不创建第二个 Source、保持 addedAt、保留 omitted Memo，
   而不同 query/fragment/tracking URLs 创建不同 Sources，并独立处理 multi-tab partial failures。
+- [x] 2.5 为 Source save 增加原子追加 Project memberships 的语义，且不覆盖已有 memberships。
 
 ## 3. Side Panel
 
@@ -27,6 +28,8 @@
 - [x] 3.3 抽取 SourceAvatar、SourceIdentity 和 SourceActionsMenu，供 SourceRow 与 Pinned preview 复用。
 - [x] 3.4 在 Projects 下方新增空态隐藏的 Pinned avatar grid，并按 pinnedAt descending 排序。
 - [x] 3.5 新增 hover/focus preview，展示 Source identity、Memo、Projects、addedAt 和共享 actions。
+- [x] 3.6 在 Project row 右侧新增一键保存当前链接，实现 loading/check/error 反馈和本地状态更新。
+- [x] 3.7 让 Inbox 和 Project 中的全部 SourceItems 共享复制链接与 Markdown 链接 actions。
 
 ## 4. AI context
 

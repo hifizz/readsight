@@ -87,6 +87,17 @@ parameters，不得重排 query，也不得猜测不同 URLs 的内容是否等�
 - **那么** 更新该 Source 唯一的当前 Memo
 - **而且** 只有明确删除操作可以将 Memo 设为空
 
+### 需求：SourceItem 提供共享的复制 actions
+
+Inbox 和任意 Project 中的 SourceItem 必须提供相同的“复制链接”和“复制链接与标题
+（Markdown 格式）” actions。
+
+#### 场景：复制 SourceItem 的 Markdown 链接
+
+- **当** 用户从 Inbox 或 Project 中的 SourceItem 选择“复制链接与标题（Markdown 格式）”
+- **那么** 剪贴板获得 `- [title](link)` 格式的单条 Markdown 列表项
+- **而且** title 和 link 中会破坏 Markdown 语法的字符被正确转义
+
 ### 需求：Sources 可以属于多个 Projects
 
 系统必须允许一个 Source 关联到零个或多个 user-owned Projects，且不指定 primary Project。
@@ -96,6 +107,19 @@ membership 不得引用 originating Capture。
 
 - **当** 用户为一个 Source 选择两个 Projects
 - **那么** 两个 memberships 都被保存，二者均不被视为 primary
+
+#### 场景：从 Project row 快速保存当前 tab
+
+- **当** 用户点击某个 Project 右侧的“保存当前链接”按钮
+- **那么** 系统直接将 active tab 的 Source 加入该 Project，不打开保存 dialog
+- **而且** 按钮显示请求中与成功状态，Project 保持当前展开状态
+- **而且** 成功结果直接更新本地列表，不进行整体刷新或显示成功 banner
+
+#### 场景：快速保存已属于其他 Projects 的 Source
+
+- **当** active tab 的 Source 已属于一个或多个其他 Projects
+- **那么** 系统追加目标 Project membership，并保留已有 memberships
+- **而且** 如果 Source 已属于目标 Project，则不创建重复 item
 
 ### 需求：Pin 是 SourceItem 的全局个人状态
 
