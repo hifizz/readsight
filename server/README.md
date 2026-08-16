@@ -26,3 +26,13 @@ pnpm build
 
 数据库对象位于 PostgreSQL 的 `relata` schema；`drizzle-kit push` 的内部 migration metadata
 使用 `relata_migrations`。Relata 是全新产品，不迁移或依赖旧 Readsight 数据。
+
+## Source 保存 API
+
+`POST /api/sources` 接受独立处理的批量 items。URL 使用 Chrome 提供的完整序列化值作为 key；省略 `memo` 或 `projectIds` 会保留已有状态，`memo: null` 明确删除 Memo，`projectIds: []` 明确移回 Inbox。
+
+```json
+{"items":[{"clientRequestId":"request-id","url":"https://example.com/article#notes","memo":"稍后用于项目背景","projectIds":[]}]}
+```
+
+`PATCH /api/sources/:id` 更新 Memo 或 Pin。Source list/detail 返回 `memo`、`pinnedAt`、`addedAt` 和 Project metadata，不返回保存历史。

@@ -51,7 +51,7 @@ export async function generateSourceAnalysis(input: {
   title: string;
   url: string;
   pageText?: string;
-  intents: string[];
+  memo: string | null;
 }) {
   return jsonGeneration(
     'You are Relata. Analyze saved sources faithfully. Return JSON only and never invent facts absent from the input.',

@@ -1,4 +1,4 @@
-import type { CaptureResult } from '@/lib/capture';
+import type { SourceSaveResult } from '@/lib/source-saving';
 import type { AuthUser } from '@/lib/auth';
 
 export type AuthState =
@@ -17,9 +17,12 @@ export type Source = {
   id: string;
   title: string;
   originalUrl: string;
-  canonicalUrl: string;
+  urlKey: string;
   faviconUrl: string | null;
-  lastCapturedAt: string;
+  memo: string | null;
+  pinnedAt: string | null;
+  addedAt: string;
+  projects: Array<{ id: string; name: string }>;
   projectIds: string[];
 };
 
@@ -62,5 +65,5 @@ export type InboxRange = 'today' | '7d' | '30d' | 'all';
 
 export type CaptureResultsMessage = {
   type: 'RELATA_CAPTURE_RESULTS';
-  payload: CaptureResult[];
+  payload: SourceSaveResult[];
 };

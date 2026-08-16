@@ -1,13 +1,12 @@
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '@/db/client';
-import { captures, projectSources, projects, sources } from '@/db/schema';
+import { projectSources, projects, sources } from '@/db/schema';
 import { apiError, notFoundResponse } from '@/lib/http';
 import { requireUser } from '@/lib/require-user';
 
 const membershipSchema = z.object({
   projectIds: z.array(z.string().uuid()).max(50),
-  linkedViaCaptureId: z.string().uuid().optional().nullable(),
 });
 
 export async function PUT(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -25,20 +24,6 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
       .from(sources)
       .where(and(eq(sources.id, sourceId), eq(sources.userId, current.user.id)));
       if (!source) return null;
-
-      if (parsed.data.linkedViaCaptureId) {
-        const [capture] = await tx
-        .select({ id: captures.id })
-        .from(captures)
-        .where(
-          and(
-            eq(captures.id, parsed.data.linkedViaCaptureId),
-            eq(captures.sourceId, sourceId),
-            eq(captures.userId, current.user.id),
-          ),
-        );
-        if (!capture) throw new Error('invalid_capture');
-      }
 
       if (projectIds.length > 0) {
         const selected = await tx
@@ -63,7 +48,6 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
           userId: current.user.id,
           projectId,
           sourceId,
-          linkedViaCaptureId: parsed.data.linkedViaCaptureId ?? null,
         })),
       );
       }
@@ -73,7 +57,7 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
     if (!result) return notFoundResponse();
     return Response.json({ sourceId, projectIds: result });
   } catch (error) {
-    if (error instanceof Error && (error.message === 'invalid_project' || error.message === 'invalid_capture')) {
+    if (error instanceof Error && error.message === 'invalid_project') {
       return apiError(400, error.message, 'The requested relationship is unavailable.');
     }
     throw error;

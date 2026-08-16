@@ -15,6 +15,13 @@
       "when": 1786731146589,
       "tag": "0001_careful_strong_guy",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1786870800000,
+      "tag": "0002_reading_list_sources",
+      "breakpoints": true
     }
   ]
 }

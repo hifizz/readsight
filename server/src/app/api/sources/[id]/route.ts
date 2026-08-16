@@ -1,44 +1,30 @@
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
+import { z } from 'zod';
 import { db } from '@/db/client';
-import { captures, intents, projectSources, projects, sources } from '@/db/schema';
-import { notFoundResponse } from '@/lib/http';
+import { projectSources, projects, sources } from '@/db/schema';
+import { apiError, notFoundResponse } from '@/lib/http';
 import { requireUser } from '@/lib/require-user';
 
+const patchSchema = z.object({ memo: z.string().max(4_000).nullable().optional(), pinned: z.boolean().optional() }).refine((v) => v.memo !== undefined || v.pinned !== undefined);
+
 export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
-  const current = await requireUser(request);
-  if (!current.ok) return current.response;
+  const current = await requireUser(request); if (!current.ok) return current.response;
   const { id } = await params;
-
-  const [source] = await db
-    .select()
-    .from(sources)
-    .where(and(eq(sources.id, id), eq(sources.userId, current.user.id)));
+  const [source] = await db.select().from(sources).where(and(eq(sources.id, id), eq(sources.userId, current.user.id)));
   if (!source) return notFoundResponse();
+  const memberships = await db.select({ id: projects.id, name: projects.name }).from(projectSources).innerJoin(projects, eq(projectSources.projectId, projects.id)).where(and(eq(projectSources.sourceId, id), eq(projectSources.userId, current.user.id)));
+  return Response.json({ source: { ...source, projects: memberships, projectIds: memberships.map((p) => p.id) } });
+}
 
-  const [captureRows, membershipRows] = await Promise.all([
-    db
-      .select()
-      .from(captures)
-      .where(and(eq(captures.sourceId, id), eq(captures.userId, current.user.id)))
-      .orderBy(desc(captures.capturedAt)),
-    db
-      .select({ id: projects.id, name: projects.name, archivedAt: projects.archivedAt })
-      .from(projectSources)
-      .innerJoin(projects, eq(projectSources.projectId, projects.id))
-      .where(and(eq(projectSources.sourceId, id), eq(projectSources.userId, current.user.id))),
-  ]);
-  const captureIds = new Set(captureRows.map((capture) => capture.id));
-  const intentRows = captureIds.size === 0
-    ? []
-    : await db
-      .select()
-      .from(intents)
-      .where(and(eq(intents.userId, current.user.id), inArray(intents.captureId, [...captureIds])))
-      .orderBy(desc(intents.updatedAt));
-  return Response.json({
-    source,
-    captures: captureRows,
-    intents: intentRows.filter((intent) => captureIds.has(intent.captureId)),
-    projects: membershipRows,
-  });
+export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const current = await requireUser(request); if (!current.ok) return current.response;
+  const parsed = patchSchema.safeParse(await request.json().catch(() => null));
+  if (!parsed.success) return apiError(400, 'invalid_source_update', 'Provide a valid Memo or pinned state.');
+  const { id } = await params;
+  const values: { memo?: string | null; pinnedAt?: Date | null; updatedAt: Date } = { updatedAt: new Date() };
+  if (parsed.data.memo !== undefined) values.memo = parsed.data.memo === null ? null : parsed.data.memo.trim() || null;
+  if (parsed.data.pinned !== undefined) values.pinnedAt = parsed.data.pinned ? new Date() : null;
+  const [source] = await db.update(sources).set(values).where(and(eq(sources.id, id), eq(sources.userId, current.user.id))).returning();
+  if (!source) return notFoundResponse();
+  return Response.json({ source });
 }

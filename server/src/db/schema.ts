@@ -133,76 +133,23 @@ export const sources = relataSchema.table(
     userId: text('user_id')
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
-    canonicalUrl: text('canonical_url').notNull(),
+    urlKey: text('url_key').notNull(),
     originalUrl: text('original_url').notNull(),
     title: text('title').notNull(),
     faviconUrl: text('favicon_url'),
     sourceType: text('source_type').notNull().default('web'),
     metadata: jsonb('metadata').notNull().default({}),
-    firstCapturedAt: timestamp('first_captured_at', { withTimezone: true }).notNull().defaultNow(),
-    lastCapturedAt: timestamp('last_captured_at', { withTimezone: true }).notNull().defaultNow(),
+    memo: text('memo'),
+    pinnedAt: timestamp('pinned_at', { withTimezone: true }),
+    addedAt: timestamp('added_at', { withTimezone: true }).notNull().defaultNow(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     unique('sources_id_user_id_unique').on(table.id, table.userId),
-    uniqueIndex('sources_user_canonical_url_unique').on(table.userId, table.canonicalUrl),
-    index('sources_user_last_captured_idx').on(table.userId, table.lastCapturedAt),
-  ],
-);
-
-export const captures = relataSchema.table(
-  'captures',
-  {
-    id: text('id').primaryKey(),
-    userId: text('user_id')
-      .notNull()
-      .references(() => user.id, { onDelete: 'cascade' }),
-    sourceId: text('source_id')
-      .notNull()
-      .references(() => sources.id, { onDelete: 'cascade' }),
-    clientRequestId: text('client_request_id').notNull(),
-    captureMethod: text('capture_method').notNull(),
-    capturedUrl: text('captured_url'),
-    capturedTitle: text('captured_title'),
-    capturedFaviconUrl: text('captured_favicon_url'),
-    selection: jsonb('selection'),
-    capturedAt: timestamp('captured_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (table) => [
-    unique('captures_id_user_id_unique').on(table.id, table.userId),
-    uniqueIndex('captures_user_client_request_unique').on(table.userId, table.clientRequestId),
-    index('captures_source_captured_at_idx').on(table.sourceId, table.capturedAt),
-    foreignKey({
-      columns: [table.userId, table.sourceId],
-      foreignColumns: [sources.userId, sources.id],
-      name: 'captures_source_same_user_fk',
-    }).onDelete('cascade'),
-  ],
-);
-
-export const intents = relataSchema.table(
-  'intents',
-  {
-    id: text('id').primaryKey(),
-    userId: text('user_id')
-      .notNull()
-      .references(() => user.id, { onDelete: 'cascade' }),
-    captureId: text('capture_id')
-      .notNull()
-      .references(() => captures.id, { onDelete: 'cascade' }),
-    rawText: text('raw_text').notNull(),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (table) => [
-    uniqueIndex('intents_capture_unique').on(table.captureId),
-    index('intents_user_capture_idx').on(table.userId, table.captureId),
-    foreignKey({
-      columns: [table.userId, table.captureId],
-      foreignColumns: [captures.userId, captures.id],
-      name: 'intents_capture_same_user_fk',
-    }).onDelete('cascade'),
+    uniqueIndex('sources_user_url_key_unique').on(table.userId, table.urlKey),
+    index('sources_user_added_idx').on(table.userId, table.addedAt),
+    index('sources_user_pinned_idx').on(table.userId, table.pinnedAt),
   ],
 );
 
@@ -218,9 +165,6 @@ export const projectSources = relataSchema.table(
     sourceId: text('source_id')
       .notNull()
       .references(() => sources.id, { onDelete: 'cascade' }),
-    linkedViaCaptureId: text('linked_via_capture_id').references(() => captures.id, {
-      onDelete: 'set null',
-    }),
     linkedAt: timestamp('linked_at', { withTimezone: true }).notNull().defaultNow(),
     sortOrder: integer('sort_order'),
   },
@@ -238,11 +182,6 @@ export const projectSources = relataSchema.table(
       foreignColumns: [sources.userId, sources.id],
       name: 'project_sources_source_same_user_fk',
     }).onDelete('cascade'),
-    foreignKey({
-      columns: [table.userId, table.linkedViaCaptureId],
-      foreignColumns: [captures.userId, captures.id],
-      name: 'project_sources_capture_same_user_fk',
-    }).onDelete('set null'),
   ],
 );
 
@@ -252,7 +191,6 @@ export const analysisRuns = relataSchema.table(
     id: text('id').primaryKey(),
     userId: text('user_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
     sourceId: text('source_id').notNull().references(() => sources.id, { onDelete: 'cascade' }),
-    requestedByCaptureId: text('requested_by_capture_id').references(() => captures.id, { onDelete: 'set null' }),
     status: text('status').notNull().default('queued'),
     model: text('model').notNull(),
     promptVersion: text('prompt_version').notNull(),
@@ -268,7 +206,6 @@ export const analysisRuns = relataSchema.table(
     index('analysis_runs_source_created_idx').on(table.userId, table.sourceId, table.createdAt),
     index('analysis_runs_status_idx').on(table.status, table.createdAt),
     foreignKey({ columns: [table.userId, table.sourceId], foreignColumns: [sources.userId, sources.id], name: 'analysis_runs_source_same_user_fk' }).onDelete('cascade'),
-    foreignKey({ columns: [table.userId, table.requestedByCaptureId], foreignColumns: [captures.userId, captures.id], name: 'analysis_runs_capture_same_user_fk' }),
     check('analysis_runs_status_check', sql`${table.status} in ('queued','running','completed','failed','cancelled')`),
   ],
 );

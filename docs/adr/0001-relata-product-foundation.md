@@ -1,5 +1,7 @@
 # ADR-0001：Relata 产品基础
 
+> 关于重复 Capture、Capture Intent 与 canonical URL 的决策已由 [ADR 0002](./0002-reading-list-source-items.md) supersede；本文件保留为历史记录。
+
 - 状态：已接受
 - 日期：2026-08-14
 - 决策负责人：产品与工程

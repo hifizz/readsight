@@ -6,7 +6,7 @@ import {
   refreshAuthUser,
   subscribeAuth
 } from '@/lib/auth';
-import { BACKEND } from '@/lib/capture';
+import { BACKEND } from '@/lib/source-saving';
 import { AuthGate } from './components/auth-gate';
 import { LoadingView } from './components/loading-view';
 import { RelataHome } from './RelataHome';

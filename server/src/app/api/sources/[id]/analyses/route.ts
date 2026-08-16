@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
-import { and, desc, eq, inArray, lt, sql } from 'drizzle-orm';
+import { and, desc, eq, lt, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '@/db/client';
-import { analysisRuns, captures, intents, sourceAnalyses, sources } from '@/db/schema';
+import { analysisRuns, sourceAnalyses, sources } from '@/db/schema';
 import { notFoundResponse } from '@/lib/http';
 import { quotaExceededResponse, reserveUsage } from '@/lib/quota';
 import { ANALYSIS_PROMPT_VERSION, generateSourceAnalysis, RELATA_MODEL_ID } from '@/lib/relata-ai';
@@ -14,7 +14,6 @@ export const dynamic = 'force-dynamic';
 const requestSchema = z.object({
   pageText: z.string().max(120_000).optional(),
   extraction: z.object({ method: z.string().max(80), contentLength: z.number().int().nonnegative().optional() }).optional(),
-  requestedByCaptureId: z.string().uuid().optional(),
   simulateFailure: z.boolean().optional(),
 });
 
@@ -43,14 +42,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
   const [source] = await db.select().from(sources).where(and(eq(sources.id, id), eq(sources.userId, current.user.id)));
   if (!source) return notFoundResponse();
-  const captureRows = await db.select({ id: captures.id }).from(captures).where(and(eq(captures.userId, current.user.id), eq(captures.sourceId, id)));
-  if (body.data.requestedByCaptureId && !captureRows.some((capture) => capture.id === body.data.requestedByCaptureId)) return notFoundResponse();
-  const intentRows = captureRows.length ? await db.select({ rawText: intents.rawText }).from(intents).where(and(eq(intents.userId, current.user.id), inArray(intents.captureId, captureRows.map((capture) => capture.id)))) : [];
-
-  const fingerprint = createHash('sha256').update(JSON.stringify({ source: source.canonicalUrl, title: source.title, intents: intentRows.map((row) => row.rawText), pageText: body.data.pageText ?? '' })).digest('hex');
+  const fingerprint = createHash('sha256').update(JSON.stringify({ source: source.urlKey, title: source.title, memo: source.memo, pageText: body.data.pageText ?? '' })).digest('hex');
   const runId = crypto.randomUUID();
   await db.insert(analysisRuns).values({
-    id: runId, userId: current.user.id, sourceId: id, requestedByCaptureId: body.data.requestedByCaptureId,
+    id: runId, userId: current.user.id, sourceId: id,
     status: 'queued', model: RELATA_MODEL_ID, promptVersion: ANALYSIS_PROMPT_VERSION,
     inputFingerprint: fingerprint,
     extractionMetadata: { method: body.data.extraction?.method ?? (body.data.pageText ? 'extension_text' : 'metadata_only'), contentLength: body.data.pageText?.length ?? 0 },
@@ -65,7 +60,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
   try {
     if (body.data.simulateFailure && process.env.NODE_ENV !== 'production') throw new Error('simulated_failure');
-    const output = await generateSourceAnalysis({ title: source.title, url: source.originalUrl, pageText: body.data.pageText, intents: intentRows.map((row) => row.rawText) });
+    const output = await generateSourceAnalysis({ title: source.title, url: source.originalUrl, pageText: body.data.pageText, memo: source.memo });
     const analysis = await db.transaction(async (tx) => {
       await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${id}))`);
       const [latest] = await tx.select({ version: sourceAnalyses.version }).from(sourceAnalyses).where(eq(sourceAnalyses.sourceId, id)).orderBy(desc(sourceAnalyses.version)).limit(1);

@@ -1,18 +1,20 @@
 import { useEffect, useState } from 'react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { signOut, type AuthUser } from '@/lib/auth';
-import { BACKEND, type CaptureResult } from '@/lib/capture';
+import { authFetch, signOut, type AuthUser } from '@/lib/auth';
+import { BACKEND, type SourceSaveResult } from '@/lib/source-saving';
 import { AnalysisDialog } from './components/analysis-panel';
 import {
   CaptureDialog,
   CaptureResults,
   CreateProjectDialog,
-  MembershipDialog
+  MembershipDialog,
+  MemoDialog
 } from './components/library-dialogs';
 import { SidePanelHeader } from './components/sidepanel-header';
 import {
   InboxGroup,
   ProjectList,
+  PinnedSources,
   SourceListSkeleton
 } from './components/source-lists';
 import type { Source } from './types';
@@ -30,8 +32,9 @@ export function RelataHome({
   const [captureOpen, setCaptureOpen] = useState(false);
   const [projectOpen, setProjectOpen] = useState(false);
   const [editingSource, setEditingSource] = useState<Source | null>(null);
+  const [memoSource, setMemoSource] = useState<Source | null>(null);
   const [analyzingSource, setAnalyzingSource] = useState<Source | null>(null);
-  const [results, setResults] = useState<CaptureResult[]>([]);
+  const [results, setResults] = useState<SourceSaveResult[]>([]);
   const [signingOut, setSigningOut] = useState(false);
 
   useEffect(() => {
@@ -54,11 +57,18 @@ export function RelataHome({
     }
   };
 
-  const handleCaptureResults = (next: CaptureResult[]) => {
+  const handleCaptureResults = (next: SourceSaveResult[]) => {
     setResults(next);
     if (next.some((item) => item.ok)) setCaptureOpen(false);
     void library.refreshAll();
   };
+  const togglePin = async (source: Source) => {
+    const response = await authFetch(`${BACKEND}/api/sources/${source.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pinned: !source.pinnedAt }) });
+    if (!response.ok) return;
+    const body = await response.json() as { source: Pick<Source, 'id' | 'pinnedAt'> };
+    library.updateSource(body.source);
+  };
+  const sourceActions = { onAnalyze: setAnalyzingSource, onEditMembership: setEditingSource, onEditMemo: setMemoSource, onTogglePin: (source: Source) => void togglePin(source) };
 
   return (
     <main className="min-h-screen bg-background text-foreground">
@@ -87,15 +97,14 @@ export function RelataHome({
               onRangeChange={library.setInboxRange}
               loading={library.inboxLoading}
               sources={library.inboxSources}
-              onAnalyze={setAnalyzingSource}
-              onEditMembership={setEditingSource}
+              {...sourceActions}
             />
             <ProjectList
               projects={library.projects}
               sourcesByProject={library.sourcesByProject}
-              onAnalyze={setAnalyzingSource}
-              onEditMembership={setEditingSource}
+              {...sourceActions}
             />
+            <PinnedSources sources={library.pinnedSources} {...sourceActions}/>
           </div>
         )}
       </div>
@@ -124,6 +133,7 @@ export function RelataHome({
           void library.refreshAll();
         }}
       />
+      <MemoDialog source={memoSource} onOpenChange={(open) => { if (!open) setMemoSource(null); }} onSaved={() => { setMemoSource(null); void library.refreshAll(); }}/>
       <AnalysisDialog
         source={analyzingSource}
         projects={library.projects}

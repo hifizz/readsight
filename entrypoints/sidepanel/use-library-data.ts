@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { authFetch } from '@/lib/auth';
-import { BACKEND } from '@/lib/capture';
+import { BACKEND } from '@/lib/source-saving';
 import type { InboxRange, Project, Source } from './types';
 import { inboxRangeQuery } from './utils';
 
@@ -60,6 +60,12 @@ export function useLibraryData() {
     [refreshBase, refreshInbox]
   );
 
+  const updateSource = useCallback((updated: Partial<Source> & Pick<Source, 'id'>) => {
+    const merge = (source: Source) => source.id === updated.id ? { ...source, ...updated } : source;
+    setSources((current) => current.map(merge));
+    setInboxSources((current) => current.map(merge));
+  }, []);
+
   useEffect(() => {
     void refreshBase();
   }, [refreshBase]);
@@ -78,6 +84,7 @@ export function useLibraryData() {
       ),
     [projects, sources]
   );
+  const pinnedSources = useMemo(() => sources.filter((source) => source.pinnedAt).sort((a, b) => Date.parse(b.pinnedAt!) - Date.parse(a.pinnedAt!)), [sources]);
 
   return {
     projects,
@@ -88,7 +95,9 @@ export function useLibraryData() {
     loading,
     error,
     sourcesByProject,
+    pinnedSources,
     refreshBase,
-    refreshAll
+    refreshAll,
+    updateSource
   };
 }

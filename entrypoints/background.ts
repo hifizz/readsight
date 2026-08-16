@@ -1,10 +1,10 @@
-import { captureItemFromTab, submitCaptures } from '@/lib/capture';
+import { saveSources, sourceItemFromTab } from '@/lib/source-saving';
 
 const MENU_ID_SAVE_TABS = 'relata-save-tabs';
 
 type CaptureResultMessage = {
   type: 'RELATA_CAPTURE_RESULTS';
-  payload: Awaited<ReturnType<typeof submitCaptures>>;
+  payload: Awaited<ReturnType<typeof saveSources>>;
 };
 
 async function saveSelectedTabs(clickedTab: chrome.tabs.Tab | undefined): Promise<void> {
@@ -13,17 +13,17 @@ async function saveSelectedTabs(clickedTab: chrome.tabs.Tab | undefined): Promis
     ? clickedTab ? [clickedTab] : []
     : await chrome.tabs.query({ highlighted: true, windowId });
   const eligible = tabs
-    .map((tab) => captureItemFromTab(tab, 'tab_context_menu'))
+    .map((tab) => sourceItemFromTab(tab))
     .filter((item): item is NonNullable<typeof item> => item !== null);
   const rejected = tabs
-    .filter((tab) => !captureItemFromTab(tab, 'tab_context_menu'))
+    .filter((tab) => !sourceItemFromTab(tab))
     .map(() => ({
       ok: false as const,
       clientRequestId: null,
       error: 'restricted_tab',
       message: '此标签页的地址无法保存。',
     }));
-  const results = [...await submitCaptures(eligible), ...rejected];
+  const results = [...await saveSources(eligible), ...rejected];
   const message: CaptureResultMessage = { type: 'RELATA_CAPTURE_RESULTS', payload: results };
   chrome.runtime.sendMessage(message).catch(() => {
     // Side Panel 尚未打开时没有 receiver；结果仍由下次列表加载反映。

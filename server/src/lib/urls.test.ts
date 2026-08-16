@@ -1,26 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { CANONICAL_URL_VERSION, canonicalizeUrl } from './urls';
+import { sourceUrlKey } from './urls';
 
-test('规范化主机、fragment、tracking parameters 和查询参数顺序', () => {
-  const result = canonicalizeUrl(
-    ' HTTPS://Example.COM/path?utm_source=x&b=2&a=3&fbclid=ignored&a=1#section ',
-  );
-
-  assert.deepEqual(result, {
-    canonicalUrl: 'https://example.com/path?a=1&a=3&b=2',
-    normalizationVersion: CANONICAL_URL_VERSION,
-  });
+test('preserves query order, duplicate parameters, tracking and fragments', () => {
+  const values = ['https://example.com/article', 'https://example.com/article?utm_source=x&a=2&a=1', 'https://example.com/article#comments', 'https://example.com/search?q=react', 'https://example.com/search?q=vue'];
+  assert.deepEqual(values.map(sourceUrlKey), values);
+  assert.equal(new Set(values.map(sourceUrlKey)).size, values.length);
 });
 
-test('保留非 tracking parameters 并移除大小写不同的 tracking parameters', () => {
-  assert.equal(
-    canonicalizeUrl('http://example.com/?UTM_Campaign=x&ref=relata&gClId=y').canonicalUrl,
-    'http://example.com/?ref=relata',
-  );
+test('respects the Chrome serialization boundary', () => {
+  assert.equal(new URL('https://EXAMPLE.com:443/article').toString(), 'https://example.com/article');
+  assert.equal(sourceUrlKey('https://example.com/article'), 'https://example.com/article');
 });
 
-test('拒绝无效 URL 和非 HTTP(S) scheme', () => {
-  assert.throws(() => canonicalizeUrl('not a URL'), /invalid_url/);
-  assert.throws(() => canonicalizeUrl('chrome://extensions'), /unsupported_url_scheme/);
-});
+test('rejects unsupported schemes', () => assert.throws(() => sourceUrlKey('chrome://settings'), /unsupported_url_scheme/));

@@ -9,7 +9,7 @@ import {
   signInWithEmail,
   type AuthUser
 } from '@/lib/auth';
-import { BACKEND } from '@/lib/capture';
+import { BACKEND } from '@/lib/source-saving';
 
 export function AuthGate({
   onAuthenticated

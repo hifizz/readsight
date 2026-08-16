@@ -17,10 +17,10 @@ import { Textarea } from '@/components/ui/textarea';
 import { authFetch } from '@/lib/auth';
 import {
   BACKEND,
-  captureItemFromTab,
-  submitCaptures,
-  type CaptureResult
-} from '@/lib/capture';
+  saveSources,
+  sourceItemFromTab,
+  type SourceSaveResult
+} from '@/lib/source-saving';
 import type { Project, Source } from '../types';
 
 type OpenDialogProps = {
@@ -35,14 +35,14 @@ export function CaptureDialog({
   onCaptured
 }: OpenDialogProps & {
   projects: Project[];
-  onCaptured: (results: CaptureResult[]) => void;
+  onCaptured: (results: SourceSaveResult[]) => void;
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-[calc(100%-1rem)] gap-3 p-3">
         <DialogHeader className="gap-1">
           <DialogTitle>保存当前链接</DialogTitle>
-          <DialogDescription>Intent 和 Project 都是可选的。</DialogDescription>
+          <DialogDescription>Memo 和 Project 都是可选的。</DialogDescription>
         </DialogHeader>
         <CaptureForm projects={projects} onResult={onCaptured} />
       </DialogContent>
@@ -96,14 +96,34 @@ export function MembershipDialog({
   );
 }
 
+export function MemoDialog({ source, onOpenChange, onSaved }: { source: Source | null; onOpenChange: (open: boolean) => void; onSaved: () => void }) {
+  return <Dialog open={source !== null} onOpenChange={onOpenChange}>{source && <DialogContent className="max-w-[calc(100%-1rem)] gap-3 p-3"><DialogHeader><DialogTitle>{source.memo ? '编辑 Memo' : '添加 Memo'}</DialogTitle><DialogDescription className="line-clamp-2">{source.title}</DialogDescription></DialogHeader><MemoForm source={source} onSaved={onSaved} /></DialogContent>}</Dialog>;
+}
+
+function MemoForm({ source, onSaved }: { source: Source; onSaved: () => void }) {
+  const [memo, setMemo] = useState(source.memo ?? '');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const submit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault(); setSaving(true); setError(null);
+    try {
+      const response = await authFetch(`${BACKEND}/api/sources/${source.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ memo: memo.trim() || null }) });
+      if (!response.ok) throw new Error('无法更新 Memo。');
+      onSaved();
+    } catch (caught) { setError(caught instanceof Error ? caught.message : '无法更新 Memo。'); }
+    finally { setSaving(false); }
+  };
+  return <form className="grid gap-3" onSubmit={(event) => void submit(event)}><Textarea value={memo} onChange={(event) => setMemo(event.target.value)} maxLength={4_000} autoFocus placeholder="为什么保存它？"/><FormError error={error}/><DialogFormFooter submitting={saving} submitLabel="保存 Memo" pendingLabel="保存中…"/></form>;
+}
+
 function CaptureForm({
   projects,
   onResult
 }: {
   projects: Project[];
-  onResult: (results: CaptureResult[]) => void;
+  onResult: (results: SourceSaveResult[]) => void;
 }) {
-  const [intent, setIntent] = useState('');
+  const [memo, setMemo] = useState('');
   const [projectIds, setProjectIds] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -117,11 +137,11 @@ function CaptureForm({
         active: true,
         currentWindow: true
       });
-      const item = tab ? captureItemFromTab(tab, 'side_panel') : null;
+      const item = tab ? sourceItemFromTab(tab) : null;
       if (!item) throw new Error('当前标签页无法保存。');
       onResult(
-        await submitCaptures([
-          { ...item, intent: intent.trim() || undefined, projectIds }
+        await saveSources([
+          { ...item, memo: memo.trim() || undefined, projectIds }
         ])
       );
     } catch (caught) {
@@ -136,13 +156,13 @@ function CaptureForm({
   return (
     <form className="grid gap-3" onSubmit={(event) => void submit(event)}>
       <div className="grid gap-1.5">
-        <Label htmlFor="capture-intent">
-          Intent <span className="font-normal text-muted-foreground">可选</span>
+        <Label htmlFor="source-memo">
+          Memo <span className="font-normal text-muted-foreground">可选</span>
         </Label>
         <Textarea
-          id="capture-intent"
-          value={intent}
-          onChange={(event) => setIntent(event.target.value)}
+          id="source-memo"
+          value={memo}
+          onChange={(event) => setMemo(event.target.value)}
           placeholder="为什么保存它？"
           className="min-h-16 text-xs"
           maxLength={4_000}
@@ -360,7 +380,7 @@ export function CaptureResults({
   results,
   onDismiss
 }: {
-  results: CaptureResult[];
+  results: SourceSaveResult[];
   onDismiss: () => void;
 }) {
   const successes = results.filter((item) => item.ok).length;
