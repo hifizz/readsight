@@ -28,3 +28,11 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   if (!source) return notFoundResponse();
   return Response.json({ source });
 }
+
+export async function DELETE(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const current = await requireUser(request); if (!current.ok) return current.response;
+  const { id } = await params;
+  const [source] = await db.delete(sources).where(and(eq(sources.id, id), eq(sources.userId, current.user.id))).returning({ id: sources.id });
+  if (!source) return notFoundResponse();
+  return Response.json({ sourceId: source.id });
+}

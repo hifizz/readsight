@@ -54,7 +54,7 @@ export function CreateProjectDialog({
   open,
   onOpenChange,
   onCreated
-}: OpenDialogProps & { onCreated: () => void }) {
+}: OpenDialogProps & { onCreated: (project: Project) => void }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-[calc(100%-1rem)] gap-3 p-3">
@@ -62,7 +62,7 @@ export function CreateProjectDialog({
           <DialogTitle>创建 Project</DialogTitle>
           <DialogDescription>用于组织围绕同一目标保存的 Sources。</DialogDescription>
         </DialogHeader>
-        <ProjectForm onCreated={onCreated} />
+          <ProjectForm onCreated={onCreated} />
       </DialogContent>
     </Dialog>
   );
@@ -77,7 +77,7 @@ export function MembershipDialog({
   source: Source | null;
   projects: Project[];
   onOpenChange: (open: boolean) => void;
-  onSaved: () => void;
+  onSaved: (sourceId: string, projectIds: string[]) => void;
 }) {
   return (
     <Dialog open={source !== null} onOpenChange={onOpenChange}>
@@ -96,11 +96,11 @@ export function MembershipDialog({
   );
 }
 
-export function MemoDialog({ source, onOpenChange, onSaved }: { source: Source | null; onOpenChange: (open: boolean) => void; onSaved: () => void }) {
+export function MemoDialog({ source, onOpenChange, onSaved }: { source: Source | null; onOpenChange: (open: boolean) => void; onSaved: (source: Pick<Source, 'id' | 'memo'>) => void }) {
   return <Dialog open={source !== null} onOpenChange={onOpenChange}>{source && <DialogContent className="max-w-[calc(100%-1rem)] gap-3 p-3"><DialogHeader><DialogTitle>{source.memo ? '编辑 Memo' : '添加 Memo'}</DialogTitle><DialogDescription className="line-clamp-2">{source.title}</DialogDescription></DialogHeader><MemoForm source={source} onSaved={onSaved} /></DialogContent>}</Dialog>;
 }
 
-function MemoForm({ source, onSaved }: { source: Source; onSaved: () => void }) {
+function MemoForm({ source, onSaved }: { source: Source; onSaved: (source: Pick<Source, 'id' | 'memo'>) => void }) {
   const [memo, setMemo] = useState(source.memo ?? '');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -109,7 +109,8 @@ function MemoForm({ source, onSaved }: { source: Source; onSaved: () => void }) 
     try {
       const response = await authFetch(`${BACKEND}/api/sources/${source.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ memo: memo.trim() || null }) });
       if (!response.ok) throw new Error('无法更新 Memo。');
-      onSaved();
+      const body = await response.json() as { source: Pick<Source, 'id' | 'memo'> };
+      onSaved(body.source);
     } catch (caught) { setError(caught instanceof Error ? caught.message : '无法更新 Memo。'); }
     finally { setSaving(false); }
   };
@@ -183,7 +184,7 @@ function CaptureForm({
   );
 }
 
-function ProjectForm({ onCreated }: { onCreated: () => void }) {
+function ProjectForm({ onCreated }: { onCreated: (project: Project) => void }) {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -200,7 +201,8 @@ function ProjectForm({ onCreated }: { onCreated: () => void }) {
         body: JSON.stringify({ name, description: description.trim() || null })
       });
       if (!response.ok) throw new Error('无法创建 Project。');
-      onCreated();
+      const body = await response.json() as { project: Project };
+      onCreated(body.project);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '无法创建 Project。');
     } finally {
@@ -252,7 +254,7 @@ function MembershipForm({
 }: {
   source: Source;
   projects: Project[];
-  onSaved: () => void;
+  onSaved: (sourceId: string, projectIds: string[]) => void;
 }) {
   const [selected, setSelected] = useState(source.projectIds);
   const [error, setError] = useState<string | null>(null);
@@ -272,7 +274,8 @@ function MembershipForm({
         }
       );
       if (!response.ok) throw new Error('无法更新 Project 关联。');
-      onSaved();
+      const body = await response.json() as { sourceId: string; projectIds: string[] };
+      onSaved(body.sourceId, body.projectIds);
     } catch (caught) {
       setError(
         caught instanceof Error ? caught.message : '无法更新 Project 关联。'
@@ -383,13 +386,12 @@ export function CaptureResults({
   results: SourceSaveResult[];
   onDismiss: () => void;
 }) {
-  const successes = results.filter((item) => item.ok).length;
   const failures = results.filter((item) => !item.ok);
+  if (failures.length === 0) return null;
   return (
     <Alert className="mb-2">
       <AlertDescription className="flex items-start gap-2">
         <span className="flex-1">
-          {successes ? `已保存 ${successes} 个标签页。` : '没有标签页被保存。'}
           {failures.map((item) => (
             <span key={item.clientRequestId} className="block text-destructive">
               {item.message}

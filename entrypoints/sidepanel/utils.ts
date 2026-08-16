@@ -29,24 +29,6 @@ export function initials(value: string): string {
   );
 }
 
-export function inboxRangeQuery(range: InboxRange): string {
-  const params = new URLSearchParams({ inbox: 'true' });
-  if (range === 'all') return params.toString();
-
-  const from = new Date();
-  from.setHours(0, 0, 0, 0);
-  if (range === '7d') from.setDate(from.getDate() - 6);
-  if (range === '30d') from.setDate(from.getDate() - 29);
-
-  const to = new Date();
-  to.setHours(0, 0, 0, 0);
-  to.setDate(to.getDate() + 1);
-
-  params.set('from', from.toISOString());
-  params.set('to', to.toISOString());
-  return params.toString();
-}
-
 export function relativeTime(value: string): string {
   const seconds = Math.max(
     0,

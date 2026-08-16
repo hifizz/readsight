@@ -32,3 +32,12 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   if (!project) return notFoundResponse();
   return Response.json({ project });
 }
+
+export async function DELETE(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const current = await requireUser(request);
+  if (!current.ok) return current.response;
+  const { id } = await params;
+  const [project] = await db.delete(projects).where(and(eq(projects.id, id), eq(projects.userId, current.user.id))).returning({ id: projects.id });
+  if (!project) return notFoundResponse();
+  return Response.json({ projectId: project.id });
+}
