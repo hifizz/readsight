@@ -20,7 +20,7 @@ export function useLibraryData() {
   const removeProject = useLibraryStore((state) => state.removeProject);
   const removeSource = useLibraryStore((state) => state.removeSource);
   const reset = useLibraryStore((state) => state.reset);
-  const [inboxRange, setInboxRange] = useState<InboxRange>('today');
+  const [inboxRange, setInboxRange] = useState<InboxRange>('7d');
 
   const refreshBase = useCallback(async () => {
     beginLoad();

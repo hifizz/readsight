@@ -344,7 +344,11 @@ function AnalysisActions({
 }) {
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <Button size="sm" onClick={() => void onAnalyze()} disabled={busy !== null}>
+      <Button
+        size="sm"
+        onClick={() => void onAnalyze()}
+        disabled={busy !== null}
+      >
         <Sparkles />
         {busy === 'analysis'
           ? '分析中…'
@@ -459,7 +463,10 @@ function AnalysisSummary({
               </p>
               <ul className="list-disc space-y-1 pl-4 text-xs text-muted-foreground">
                 {insight.implications.map((item) => (
-                  <li key={item} className="break-words [overflow-wrap:anywhere]">
+                  <li
+                    key={item}
+                    className="break-words [overflow-wrap:anywhere]"
+                  >
                     {item}
                   </li>
                 ))}

@@ -13,5 +13,5 @@ colorSchemeQuery.addEventListener('change', (e) => applyColorScheme(e.matches));
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <App />
-  </React.StrictMode>,
+  </React.StrictMode>
 );

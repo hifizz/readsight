@@ -60,9 +60,11 @@ export function CreateProjectDialog({
       <DialogContent className="max-w-[calc(100%-1rem)] gap-3 p-3">
         <DialogHeader className="gap-1">
           <DialogTitle>创建 Project</DialogTitle>
-          <DialogDescription>用于组织围绕同一目标保存的 Sources。</DialogDescription>
+          <DialogDescription>
+            用于组织围绕同一目标保存的 Sources。
+          </DialogDescription>
         </DialogHeader>
-          <ProjectForm onCreated={onCreated} />
+        <ProjectForm onCreated={onCreated} />
       </DialogContent>
     </Dialog>
   );
@@ -89,32 +91,91 @@ export function MembershipDialog({
               {source.title}
             </DialogDescription>
           </DialogHeader>
-          <MembershipForm source={source} projects={projects} onSaved={onSaved} />
+          <MembershipForm
+            source={source}
+            projects={projects}
+            onSaved={onSaved}
+          />
         </DialogContent>
       )}
     </Dialog>
   );
 }
 
-export function MemoDialog({ source, onOpenChange, onSaved }: { source: Source | null; onOpenChange: (open: boolean) => void; onSaved: (source: Pick<Source, 'id' | 'memo'>) => void }) {
-  return <Dialog open={source !== null} onOpenChange={onOpenChange}>{source && <DialogContent className="max-w-[calc(100%-1rem)] gap-3 p-3"><DialogHeader><DialogTitle>{source.memo ? '编辑 Memo' : '添加 Memo'}</DialogTitle><DialogDescription className="line-clamp-2">{source.title}</DialogDescription></DialogHeader><MemoForm source={source} onSaved={onSaved} /></DialogContent>}</Dialog>;
+export function MemoDialog({
+  source,
+  onOpenChange,
+  onSaved
+}: {
+  source: Source | null;
+  onOpenChange: (open: boolean) => void;
+  onSaved: (source: Pick<Source, 'id' | 'memo'>) => void;
+}) {
+  return (
+    <Dialog open={source !== null} onOpenChange={onOpenChange}>
+      {source && (
+        <DialogContent className="max-w-[calc(100%-1rem)] gap-3 p-3">
+          <DialogHeader>
+            <DialogTitle>{source.memo ? '编辑 Memo' : '添加 Memo'}</DialogTitle>
+            <DialogDescription className="line-clamp-2">
+              {source.title}
+            </DialogDescription>
+          </DialogHeader>
+          <MemoForm source={source} onSaved={onSaved} />
+        </DialogContent>
+      )}
+    </Dialog>
+  );
 }
 
-function MemoForm({ source, onSaved }: { source: Source; onSaved: (source: Pick<Source, 'id' | 'memo'>) => void }) {
+function MemoForm({
+  source,
+  onSaved
+}: {
+  source: Source;
+  onSaved: (source: Pick<Source, 'id' | 'memo'>) => void;
+}) {
   const [memo, setMemo] = useState(source.memo ?? '');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault(); setSaving(true); setError(null);
+    event.preventDefault();
+    setSaving(true);
+    setError(null);
     try {
-      const response = await authFetch(`${BACKEND}/api/sources/${source.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ memo: memo.trim() || null }) });
+      const response = await authFetch(`${BACKEND}/api/sources/${source.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ memo: memo.trim() || null })
+      });
       if (!response.ok) throw new Error('无法更新 Memo。');
-      const body = await response.json() as { source: Pick<Source, 'id' | 'memo'> };
+      const body = (await response.json()) as {
+        source: Pick<Source, 'id' | 'memo'>;
+      };
       onSaved(body.source);
-    } catch (caught) { setError(caught instanceof Error ? caught.message : '无法更新 Memo。'); }
-    finally { setSaving(false); }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '无法更新 Memo。');
+    } finally {
+      setSaving(false);
+    }
   };
-  return <form className="grid gap-3" onSubmit={(event) => void submit(event)}><Textarea value={memo} onChange={(event) => setMemo(event.target.value)} maxLength={4_000} autoFocus placeholder="为什么保存它？"/><FormError error={error}/><DialogFormFooter submitting={saving} submitLabel="保存 Memo" pendingLabel="保存中…"/></form>;
+  return (
+    <form className="grid gap-3" onSubmit={(event) => void submit(event)}>
+      <Textarea
+        value={memo}
+        onChange={(event) => setMemo(event.target.value)}
+        maxLength={4_000}
+        autoFocus
+        placeholder="为什么保存它？"
+      />
+      <FormError error={error} />
+      <DialogFormFooter
+        submitting={saving}
+        submitLabel="保存 Memo"
+        pendingLabel="保存中…"
+      />
+    </form>
+  );
 }
 
 function CaptureForm({
@@ -201,7 +262,7 @@ function ProjectForm({ onCreated }: { onCreated: (project: Project) => void }) {
         body: JSON.stringify({ name, description: description.trim() || null })
       });
       if (!response.ok) throw new Error('无法创建 Project。');
-      const body = await response.json() as { project: Project };
+      const body = (await response.json()) as { project: Project };
       onCreated(body.project);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '无法创建 Project。');
@@ -274,7 +335,10 @@ function MembershipForm({
         }
       );
       if (!response.ok) throw new Error('无法更新 Project 关联。');
-      const body = await response.json() as { sourceId: string; projectIds: string[] };
+      const body = (await response.json()) as {
+        sourceId: string;
+        projectIds: string[];
+      };
       onSaved(body.sourceId, body.projectIds);
     } catch (caught) {
       setError(
@@ -315,7 +379,11 @@ function ProjectCheckboxes({
   onChange: (ids: string[]) => void;
 }) {
   if (projects.length === 0) {
-    return <p className="text-xs text-muted-foreground">尚无 Project，将保存到 Inbox。</p>;
+    return (
+      <p className="text-xs text-muted-foreground">
+        尚无 Project，将保存到 Inbox。
+      </p>
+    );
   }
 
   return (

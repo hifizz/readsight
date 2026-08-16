@@ -64,30 +64,74 @@ export function RelataHome({
     library.applySaveResults(next);
   };
   const togglePin = async (source: Source) => {
-    const response = await authFetch(`${BACKEND}/api/sources/${source.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pinned: !source.pinnedAt }) });
+    const response = await authFetch(`${BACKEND}/api/sources/${source.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pinned: !source.pinnedAt })
+    });
     if (!response.ok) return;
-    const body = await response.json() as { source: Pick<Source, 'id' | 'pinnedAt'> };
+    const body = (await response.json()) as {
+      source: Pick<Source, 'id' | 'pinnedAt'>;
+    };
     library.patchSource(body.source);
   };
   const deleteSource = async (source: Source) => {
     if (!window.confirm(`删除「${source.title}」？`)) return;
-    const response = await authFetch(`${BACKEND}/api/sources/${source.id}`, { method: 'DELETE' });
+    const response = await authFetch(`${BACKEND}/api/sources/${source.id}`, {
+      method: 'DELETE'
+    });
     if (response.ok) library.removeSource(source.id);
   };
   const renameProject = async (project: { id: string; name: string }) => {
     const name = window.prompt('Project 名称', project.name)?.trim();
     if (!name || name === project.name) return;
-    const response = await authFetch(`${BACKEND}/api/projects/${project.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+    const response = await authFetch(`${BACKEND}/api/projects/${project.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name })
+    });
     if (!response.ok) return;
-    const body = await response.json() as { project: Project };
+    const body = (await response.json()) as { project: Project };
     library.updateProject(body.project);
   };
   const deleteProject = async (project: { id: string; name: string }) => {
-    if (!window.confirm(`删除 Project「${project.name}」？其中的 Sources 不会被删除。`)) return;
-    const response = await authFetch(`${BACKEND}/api/projects/${project.id}`, { method: 'DELETE' });
+    if (
+      !window.confirm(
+        `删除 Project「${project.name}」？其中的 Sources 不会被删除。`
+      )
+    )
+      return;
+    const response = await authFetch(`${BACKEND}/api/projects/${project.id}`, {
+      method: 'DELETE'
+    });
     if (response.ok) library.removeProject(project.id);
   };
-  const sourceActions = { onAnalyze: setAnalyzingSource, onEditMembership: setEditingSource, onEditMemo: setMemoSource, onTogglePin: (source: Source) => void togglePin(source), onDeleteSource: (source: Source) => void deleteSource(source) };
+  const removeFromProject = async (source: Source, projectId: string) => {
+    const projectIds = source.projectIds.filter((id) => id !== projectId);
+    const response = await authFetch(
+      `${BACKEND}/api/sources/${source.id}/projects`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectIds })
+      }
+    );
+    if (!response.ok) return;
+    const body = (await response.json()) as {
+      sourceId: string;
+      projectIds: string[];
+    };
+    library.replaceMemberships(body.sourceId, body.projectIds);
+  };
+  const sourceActions = {
+    onAnalyze: setAnalyzingSource,
+    onEditMembership: setEditingSource,
+    onEditMemo: setMemoSource,
+    onTogglePin: (source: Source) => void togglePin(source),
+    onDeleteSource: (source: Source) => void deleteSource(source),
+    onRemoveFromProject: (source: Source, projectId: string) =>
+      void removeFromProject(source, projectId)
+  };
 
   return (
     <main className="min-h-screen bg-background text-foreground">
@@ -125,7 +169,7 @@ export function RelataHome({
               onRenameProject={(project) => void renameProject(project)}
               onDeleteProject={(project) => void deleteProject(project)}
             />
-            <PinnedSources sources={library.pinnedSources} {...sourceActions}/>
+            <PinnedSources sources={library.pinnedSources} {...sourceActions} />
           </div>
         )}
       </div>
@@ -154,7 +198,16 @@ export function RelataHome({
           setEditingSource(null);
         }}
       />
-      <MemoDialog source={memoSource} onOpenChange={(open) => { if (!open) setMemoSource(null); }} onSaved={(source) => { library.patchSource(source); setMemoSource(null); }}/>
+      <MemoDialog
+        source={memoSource}
+        onOpenChange={(open) => {
+          if (!open) setMemoSource(null);
+        }}
+        onSaved={(source) => {
+          library.patchSource(source);
+          setMemoSource(null);
+        }}
+      />
       <AnalysisDialog
         source={analyzingSource}
         projects={library.projects}

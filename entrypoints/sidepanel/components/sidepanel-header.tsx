@@ -33,7 +33,7 @@ export function SidePanelHeader({
 }) {
   return (
     <header className="sticky top-0 z-20 flex items-center border-b border-b-[0.5px] bg-background/95 px-2 py-1 backdrop-blur">
-      <h1 className="mr-auto pl-1 text-sm font-semibold">阅读列表</h1>
+      <h1 className="mr-auto pl-1 text-sm ">阅读列表</h1>
       <HeaderAction label="保存当前链接" onClick={onCapture}>
         <BookmarkPlus />
       </HeaderAction>

@@ -21,7 +21,7 @@ export default defineConfig({
     name: 'Relata',
     description: "Connect what you discover to what you're working on.",
     minimum_chrome_version: '150',
-    permissions: ['sidePanel', 'storage', 'activeTab', 'tabs', 'contextMenus', 'scripting'],
+    permissions: ['sidePanel', 'storage', 'activeTab', 'tabs', 'contextMenus', 'scripting', 'clipboardWrite'],
     host_permissions: [backendMatchPattern],
     action: {
       default_title: 'Relata',
