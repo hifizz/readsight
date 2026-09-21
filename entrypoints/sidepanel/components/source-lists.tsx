@@ -37,6 +37,11 @@ import {
   SelectTrigger,
   SelectValue
 } from '@/components/ui/select';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger
+} from '@/components/ui/popover';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
   Tooltip,
@@ -69,7 +74,7 @@ export function SourceAvatar({
 }) {
   return (
     <span
-      className={`grid shrink-0 place-items-center rounded-md bg-muted text-[10px] font-semibold text-muted-foreground ${className}`}
+      className={`grid shrink-0 place-items-center ${!source.faviconUrl ? "rounded-md bg-muted" : ""} text-[10px] font-semibold text-muted-foreground ${className}`}
     >
       {source.faviconUrl ? (
         <img
@@ -102,7 +107,7 @@ export function SourceIdentity({
           {domainFor(source.originalUrl)} · {relativeTime(source.addedAt)}
         </p>
         {showMemo && source.memo && (
-          <p className="mt-1 -ml-2 line-clamp-2 whitespace-pre-line break-words rounded bg-muted/80 px-1.5 py-1 text-xs leading-4 text-foreground/70">
+          <p className="mt-1 -ml-2 line-clamp-2 whitespace-pre-line break-words rounded bg-muted/80 px-1.5 py-1 text-xs leading-4 text-foreground/70" onClick={e => e.stopPropagation()}>
             {source.memo}
           </p>
         )}
@@ -141,7 +146,7 @@ export function SourceActionsMenu({
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="end"
-        className="min-w-60 p-1 text-xs"
+        className="p-1 text-xs"
         data-source-row-action
         onClick={(event) => event.stopPropagation()}
         onPointerDown={(event) => event.stopPropagation()}
@@ -200,7 +205,7 @@ export function SourceActionsMenu({
           onSelect={() => void copySource(source, true)}
         >
           <FileText className="size-3" />
-          复制链接与标题（Markdown 格式）
+          复制链接与标题
         </DropdownMenuItem>
         <DropdownMenuItem className={itemClass} asChild>
           <a href={source.originalUrl} target="_blank" rel="noreferrer">
@@ -285,7 +290,7 @@ export function ProjectList({
       <div className="flex items-center px-3 py-2">
         <h2 className="text-xs font-medium">Projects</h2>
         <span className="ml-1.5 text-xs text-muted-foreground">
-          {projects.length}
+          ·&nbsp;{projects.length}
         </span>
       </div>
       {projects.map((project) => (
@@ -356,7 +361,7 @@ function ProjectItem({
             <ChevronRight className={`size-3.5 ${open ? 'rotate-90' : ''}`} />
             <Folder className="size-3.5 text-primary" />
             <span className="truncate text-xs">{project.name}</span>
-            <span className="ml-auto text-[10px]">{sources.length}</span>
+            <span className="text-[10px]">·&nbsp;{sources.length}</span>
           </Button>
         </CollapsibleTrigger>
         <Tooltip>
@@ -382,9 +387,9 @@ function ProjectItem({
               {saveState === 'saving' ? (
                 <LoaderCircle className="size-3 animate-spin" />
               ) : saveState === 'saved' ? (
-                <Check className="size-3 text-primary" />
+                <Check className="size-4 text-primary" />
               ) : (
-                <BookmarkPlus className="size-3" />
+                <BookmarkPlus className="size-4" />
               )}
             </Button>
           </TooltipTrigger>
@@ -402,7 +407,7 @@ function ProjectItem({
               className="mr-2 opacity-60 group-hover:opacity-100"
               aria-label={`${project.name} 的更多操作`}
             >
-              <MoreHorizontal className="size-3" />
+              <MoreHorizontal className="size-4" />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="min-w-44 p-1 text-xs">
@@ -548,48 +553,81 @@ function PinnedItem({
   ...actions
 }: { source: Source } & SourceActions) {
   const [open, setOpen] = useState(false);
+  const closeTimer = useRef<number | null>(null);
+
+  useEffect(
+    () => () => {
+      if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
+    },
+    []
+  );
+
+  const keepOpen = () => {
+    if (closeTimer.current !== null) {
+      window.clearTimeout(closeTimer.current);
+      closeTimer.current = null;
+    }
+    setOpen(true);
+  };
+
+  const closeSoon = () => {
+    if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
+    closeTimer.current = window.setTimeout(() => {
+      setOpen(false);
+      closeTimer.current = null;
+    }, 120);
+  };
+
   return (
-    <div
-      className="relative"
-      onMouseEnter={() => setOpen(true)}
-      onMouseLeave={() => setOpen(false)}
-      onFocus={() => setOpen(true)}
-      onBlur={(e) => {
-        if (!e.currentTarget.contains(e.relatedTarget)) setOpen(false);
-      }}
-    >
-      <button
-        className="rounded-md focus-visible:ring-2"
-        aria-label={`预览 ${source.title}`}
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          className="rounded-md focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+          aria-label={`预览 ${source.title}`}
+          onMouseEnter={keepOpen}
+          onMouseLeave={closeSoon}
+          onFocus={keepOpen}
+          onBlur={closeSoon}
+        >
+          <SourceAvatar source={source} className="size-5" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        side="bottom"
+        align="start"
+        sideOffset={6}
+        collisionPadding={8}
+        className="w-64 max-w-[calc(100vw-1rem)] gap-0 p-3"
+        onMouseEnter={keepOpen}
+        onMouseLeave={closeSoon}
+        onFocusCapture={keepOpen}
+        onBlurCapture={closeSoon}
+        onOpenAutoFocus={(event) => event.preventDefault()}
+        onCloseAutoFocus={(event) => event.preventDefault()}
       >
-        <SourceAvatar source={source} className="size-9" />
-      </button>
-      {open && (
-        <div className="absolute bottom-[calc(100%-1px)] left-0 z-50 w-64 max-w-[calc(100vw-1rem)] rounded-lg border bg-popover p-3 shadow-md">
-          <div className="flex items-start gap-2">
-            <SourceIdentity source={source} />
-            <Button
-              size="icon-xs"
-              variant="ghost"
-              aria-label={`取消置顶 ${source.title}`}
-              title="取消置顶"
-              onClick={() => actions.onTogglePin(source)}
-            >
-              <PinOff />
-            </Button>
-          </div>
-          {source.memo && (
-            <p className="mt-2 whitespace-pre-wrap text-xs">{source.memo}</p>
-          )}
-          <p className="mt-2 text-[10px] text-muted-foreground">
-            Projects: {source.projects.map((p) => p.name).join(', ') || 'Inbox'}
-          </p>
-          <p className="text-[10px] text-muted-foreground">
-            Added {new Date(source.addedAt).toLocaleDateString()}
-          </p>
+        <div className="flex items-start gap-2">
+          <SourceIdentity source={source} />
+          <Button
+            size="icon-xs"
+            variant="ghost"
+            aria-label={`取消置顶 ${source.title}`}
+            title="取消置顶"
+            onClick={() => actions.onTogglePin(source)}
+          >
+            <PinOff />
+          </Button>
         </div>
-      )}
-    </div>
+        {source.memo && (
+          <p className="mt-2 whitespace-pre-wrap text-xs">{source.memo}</p>
+        )}
+        <p className="mt-2 text-[10px] text-muted-foreground">
+          Projects: {source.projects.map((p) => p.name).join(', ') || 'Inbox'}
+        </p>
+        <p className="text-[10px] text-muted-foreground">
+          Added {new Date(source.addedAt).toLocaleDateString()}
+        </p>
+      </PopoverContent>
+    </Popover>
   );
 }
 

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { ScrollArea } from '@/components/ui/scroll-area';
 import { authFetch, signOut, type AuthUser } from '@/lib/auth';
 import {
   BACKEND,
@@ -78,9 +79,7 @@ export function RelataHome({
       });
       const item = tab ? sourceItemFromTab(tab) : null;
       if (!item) throw new Error('当前标签页无法保存。');
-      next = await saveSources([
-        { ...item, addProjectIds: [project.id] }
-      ]);
+      next = await saveSources([{ ...item, addProjectIds: [project.id] }]);
     } catch (caught) {
       next = [
         {
@@ -167,7 +166,7 @@ export function RelataHome({
   };
 
   return (
-    <main className="min-h-screen bg-background text-foreground">
+    <main className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground">
       <SidePanelHeader
         user={user}
         signingOut={signingOut}
@@ -175,38 +174,40 @@ export function RelataHome({
         onCreateProject={() => setProjectOpen(true)}
         onSignOut={() => void handleSignOut()}
       />
-      <div className="py-2">
-        {results.length > 0 && (
-          <CaptureResults results={results} onDismiss={() => setResults([])} />
-        )}
-        {library.error && (
-          <Alert variant="destructive" className="mb-2">
-            <AlertDescription>{library.error}</AlertDescription>
-          </Alert>
-        )}
-        {library.loading ? (
-          <SourceListSkeleton />
-        ) : (
-          <div className="space-y-2">
-            <InboxGroup
-              range={library.inboxRange}
-              onRangeChange={library.setInboxRange}
-              loading={library.inboxLoading}
-              sources={library.inboxSources}
-              {...sourceActions}
-            />
-            <ProjectList
-              projects={library.projects}
-              sourcesByProject={library.sourcesByProject}
-              {...sourceActions}
-              onSaveCurrentToProject={saveCurrentToProject}
-              onRenameProject={(project) => void renameProject(project)}
-              onDeleteProject={(project) => void deleteProject(project)}
-            />
-            <PinnedSources sources={library.pinnedSources} {...sourceActions} />
-          </div>
-        )}
-      </div>
+      <ScrollArea className="min-h-0 flex-1 [&_[data-slot=scroll-area-scrollbar]]:w-1.5 [&_[data-slot=scroll-area-scrollbar]]:p-0.5 [&_[data-slot=scroll-area-viewport]>div]:!block [&_[data-slot=scroll-area-viewport]>div]:w-full [&_[data-slot=scroll-area-viewport]>div]:min-w-0">
+        <div className="w-full min-w-0 overflow-x-hidden py-2">
+          {results.length > 0 && (
+            <CaptureResults results={results} onDismiss={() => setResults([])} />
+          )}
+          {library.error && (
+            <Alert variant="destructive" className="mb-2">
+              <AlertDescription>{library.error}</AlertDescription>
+            </Alert>
+          )}
+          {library.loading ? (
+            <SourceListSkeleton />
+          ) : (
+            <div className="space-y-2">
+              <PinnedSources sources={library.pinnedSources} {...sourceActions} />
+              <ProjectList
+                projects={library.projects}
+                sourcesByProject={library.sourcesByProject}
+                {...sourceActions}
+                onSaveCurrentToProject={saveCurrentToProject}
+                onRenameProject={(project) => void renameProject(project)}
+                onDeleteProject={(project) => void deleteProject(project)}
+              />
+              <InboxGroup
+                range={library.inboxRange}
+                onRangeChange={library.setInboxRange}
+                loading={library.inboxLoading}
+                sources={library.inboxSources}
+                {...sourceActions}
+              />
+            </div>
+          )}
+        </div>
+      </ScrollArea>
       <CaptureDialog
         open={captureOpen}
         onOpenChange={setCaptureOpen}
