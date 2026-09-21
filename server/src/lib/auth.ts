@@ -14,7 +14,7 @@ const developmentOrigins =
     : ['http://localhost:3000', 'chrome-extension://*'];
 
 export const auth = betterAuth({
-  appName: 'Readsight',
+  appName: 'Relata',
   baseURL,
   secret: process.env.BETTER_AUTH_SECRET,
   database: drizzleAdapter(db, { provider: 'pg', schema }),

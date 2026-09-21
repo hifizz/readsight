@@ -1,0 +1,642 @@
+import { useEffect, useRef, useState } from 'react';
+import {
+  BookmarkPlus,
+  Check,
+  ChevronRight,
+  Copy,
+  ExternalLink,
+  FileText,
+  Folder,
+  FolderCog,
+  FolderMinus,
+  LoaderCircle,
+  MoreHorizontal,
+  NotebookPen,
+  Pencil,
+  Pin,
+  PinOff,
+  Sparkles,
+  Trash2
+} from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger
+} from '@/components/ui/collapsible';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger
+} from '@/components/ui/dropdown-menu';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from '@/components/ui/select';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger
+} from '@/components/ui/popover';
+import { Skeleton } from '@/components/ui/skeleton';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger
+} from '@/components/ui/tooltip';
+import type { InboxRange, Project, Source } from '../types';
+import { domainFor, relativeTime } from '../utils';
+
+type SourceActions = {
+  onAnalyze: (s: Source) => void;
+  onEditMembership: (s: Source) => void;
+  onEditMemo: (s: Source) => void;
+  onTogglePin: (s: Source) => void;
+  onDeleteSource: (s: Source) => void;
+  onRemoveFromProject: (source: Source, projectId: string) => void;
+};
+type ProjectActions = {
+  onSaveCurrentToProject: (project: Project) => Promise<boolean>;
+  onRenameProject: (project: Project) => void;
+  onDeleteProject: (project: Project) => void;
+};
+
+export function SourceAvatar({
+  source,
+  className = 'size-8'
+}: {
+  source: Source;
+  className?: string;
+}) {
+  return (
+    <span
+      className={`grid shrink-0 place-items-center ${!source.faviconUrl ? "rounded-md bg-muted" : ""} text-[10px] font-semibold text-muted-foreground ${className}`}
+    >
+      {source.faviconUrl ? (
+        <img
+          className="size-5 rounded object-contain"
+          src={source.faviconUrl}
+          alt=""
+        />
+      ) : (
+        'R'
+      )}
+    </span>
+  );
+}
+
+export function SourceIdentity({
+  source,
+  showMemo = false
+}: {
+  source: Source;
+  showMemo?: boolean;
+}) {
+  return (
+    <div className="flex min-w-0 flex-1 items-start gap-2">
+      <SourceAvatar source={source} />
+      <div className="min-w-0 flex-1">
+        <span className="block truncate text-xs font-medium">
+          {source.title}
+        </span>
+        <p className="truncate text-[10px] text-muted-foreground">
+          {domainFor(source.originalUrl)} · {relativeTime(source.addedAt)}
+        </p>
+        {showMemo && source.memo && (
+          <p className="mt-1 -ml-2 line-clamp-2 whitespace-pre-line break-words rounded bg-muted/80 px-1.5 py-1 text-xs leading-4 text-foreground/70" onClick={e => e.stopPropagation()}>
+            {source.memo}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export function SourceActionsMenu({
+  source,
+  projectContextId,
+  onAnalyze,
+  onEditMembership,
+  onEditMemo,
+  onTogglePin,
+  onDeleteSource,
+  onRemoveFromProject
+}: {
+  source: Source;
+  projectContextId?: string;
+} & SourceActions) {
+  const itemClass = 'h-7 gap-1.5 px-2 py-1 text-xs';
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          size="icon-xs"
+          variant="ghost"
+          className="hover:bg-neutral-200"
+          aria-label={`${source.title} 的更多操作`}
+          data-source-row-action
+          onClick={(e) => e.stopPropagation()}
+        >
+          <MoreHorizontal className="size-3" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="end"
+        className="p-1 text-xs"
+        data-source-row-action
+        onClick={(event) => event.stopPropagation()}
+        onPointerDown={(event) => event.stopPropagation()}
+        onKeyDown={(event) => event.stopPropagation()}
+      >
+        <DropdownMenuItem
+          className={itemClass}
+          onSelect={() => onTogglePin(source)}
+        >
+          {source.pinnedAt ? (
+            <PinOff className="size-3" />
+          ) : (
+            <Pin className="size-3" />
+          )}
+          {source.pinnedAt ? '取消置顶' : '置顶'}
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          className={itemClass}
+          onSelect={() => onEditMemo(source)}
+        >
+          <NotebookPen className="size-3" />
+          {source.memo ? '编辑 Memo' : '添加 Memo'}
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          className={itemClass}
+          onSelect={() => onAnalyze(source)}
+        >
+          <Sparkles className="size-3" />
+          分析与讨论
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          className={itemClass}
+          onSelect={() => onEditMembership(source)}
+        >
+          <FolderCog className="size-3" />
+          关联 Project
+        </DropdownMenuItem>
+        {projectContextId && (
+          <DropdownMenuItem
+            className={itemClass}
+            onSelect={() => onRemoveFromProject(source, projectContextId)}
+          >
+            <FolderMinus className="size-3" />
+            移出 Project
+          </DropdownMenuItem>
+        )}
+        <DropdownMenuItem
+          className={itemClass}
+          onSelect={() => void copySource(source, false)}
+        >
+          <Copy className="size-3" />
+          复制链接
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          className={itemClass}
+          onSelect={() => void copySource(source, true)}
+        >
+          <FileText className="size-3" />
+          复制链接与标题
+        </DropdownMenuItem>
+        <DropdownMenuItem className={itemClass} asChild>
+          <a href={source.originalUrl} target="_blank" rel="noreferrer">
+            <ExternalLink className="size-3" />
+            打开链接
+          </a>
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          className={itemClass}
+          variant="destructive"
+          onSelect={() => onDeleteSource(source)}
+        >
+          <Trash2 className="size-3" />
+          删除
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+export function InboxGroup({
+  range,
+  onRangeChange,
+  loading,
+  sources,
+  ...actions
+}: {
+  range: InboxRange;
+  onRangeChange: (r: InboxRange) => void;
+  loading: boolean;
+  sources: Source[];
+} & SourceActions) {
+  return (
+    <section>
+      <div className="flex items-center px-3">
+        <h2 className="text-xs font-medium">Inbox</h2>
+        <span className="ml-1.5 text-xs text-muted-foreground">
+          {sources.length}
+        </span>
+        <Select
+          value={range}
+          onValueChange={(v) => onRangeChange(v as InboxRange)}
+        >
+          <SelectTrigger
+            size="sm"
+            className="ml-auto h-6 w-auto border-transparent bg-transparent text-[10px]"
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent align="end">
+            <SelectItem value="today">今天</SelectItem>
+            <SelectItem value="7d">近 7 天</SelectItem>
+            <SelectItem value="30d">近 30 天</SelectItem>
+            <SelectItem value="all">全部</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+      {loading ? (
+        <Skeleton className="h-20" />
+      ) : sources.length ? (
+        <SourceRows sources={sources} {...actions} />
+      ) : (
+        <p className="px-1 py-3 text-xs text-muted-foreground">
+          这个时间范围内没有未归类链接。
+        </p>
+      )}
+    </section>
+  );
+}
+
+export function ProjectList({
+  projects,
+  sourcesByProject,
+  ...actions
+}: {
+  projects: Project[];
+  sourcesByProject: Map<string, Source[]>;
+} & SourceActions &
+  ProjectActions) {
+  return (
+    <section>
+      <div className="flex items-center px-3 py-2">
+        <h2 className="text-xs font-medium">Projects</h2>
+        <span className="ml-1.5 text-xs text-muted-foreground">
+          ·&nbsp;{projects.length}
+        </span>
+      </div>
+      {projects.map((project) => (
+        <ProjectItem
+          key={project.id}
+          project={project}
+          sources={sourcesByProject.get(project.id) ?? []}
+          {...actions}
+        />
+      ))}
+    </section>
+  );
+}
+
+function ProjectItem({
+  project,
+  sources,
+  onSaveCurrentToProject,
+  onRenameProject,
+  onDeleteProject,
+  ...actions
+}: { project: Project; sources: Source[] } & SourceActions & ProjectActions) {
+  const [open, setOpen] = useState(false);
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle');
+  const resetSaveStateTimer = useRef<number | null>(null);
+  const projectItemClass = 'h-7 gap-1.5 px-2 py-1 text-xs';
+
+  useEffect(
+    () => () => {
+      if (resetSaveStateTimer.current !== null) {
+        window.clearTimeout(resetSaveStateTimer.current);
+      }
+    },
+    []
+  );
+
+  const saveCurrentLink = async () => {
+    if (saveState === 'saving') return;
+    if (resetSaveStateTimer.current !== null) {
+      window.clearTimeout(resetSaveStateTimer.current);
+      resetSaveStateTimer.current = null;
+    }
+    setSaveState('saving');
+    try {
+      const saved = await onSaveCurrentToProject(project);
+      if (!saved) {
+        setSaveState('idle');
+        return;
+      }
+      setSaveState('saved');
+      resetSaveStateTimer.current = window.setTimeout(() => {
+        setSaveState('idle');
+        resetSaveStateTimer.current = null;
+      }, 1_200);
+    } catch {
+      setSaveState('idle');
+    }
+  };
+
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <div className="group flex items-center">
+        <CollapsibleTrigger asChild>
+          <Button
+            variant="ghost"
+            className="min-w-0 flex-1 justify-start gap-1"
+          >
+            <ChevronRight className={`size-3.5 ${open ? 'rotate-90' : ''}`} />
+            <Folder className="size-3.5 text-primary" />
+            <span className="truncate text-xs">{project.name}</span>
+            <span className="text-[10px]">·&nbsp;{sources.length}</span>
+          </Button>
+        </CollapsibleTrigger>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              size="icon-xs"
+              variant="ghost"
+              className="text-muted-foreground"
+              disabled={saveState === 'saving'}
+              aria-live="polite"
+              aria-label={
+                saveState === 'saving'
+                  ? `正在保存到「${project.name}」`
+                  : saveState === 'saved'
+                    ? `已保存到「${project.name}」`
+                    : `保存当前链接到「${project.name}」`
+              }
+              onClick={(event) => {
+                event.stopPropagation();
+                void saveCurrentLink();
+              }}
+            >
+              {saveState === 'saving' ? (
+                <LoaderCircle className="size-3 animate-spin" />
+              ) : saveState === 'saved' ? (
+                <Check className="size-4 text-primary" />
+              ) : (
+                <BookmarkPlus className="size-4" />
+              )}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>
+            {saveState === 'saved'
+              ? `已保存到「${project.name}」`
+              : `保存当前链接到「${project.name}」`}
+          </TooltipContent>
+        </Tooltip>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              size="icon-xs"
+              variant="ghost"
+              className="mr-2 opacity-60 group-hover:opacity-100"
+              aria-label={`${project.name} 的更多操作`}
+            >
+              <MoreHorizontal className="size-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="min-w-44 p-1 text-xs">
+            <DropdownMenuItem
+              className={projectItemClass}
+              disabled={!sources.length}
+              onSelect={() => void copyProjectSources(sources, false)}
+            >
+              <Copy className="size-3" />
+              复制所有链接
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              className={projectItemClass}
+              disabled={!sources.length}
+              onSelect={() => void copyProjectSources(sources, true)}
+            >
+              <FileText className="size-3" />
+              复制所有链接（带 Title）
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              className={projectItemClass}
+              onSelect={() => onRenameProject(project)}
+            >
+              <Pencil className="size-3" />
+              重命名
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              className={projectItemClass}
+              variant="destructive"
+              onSelect={() => onDeleteProject(project)}
+            >
+              <Trash2 className="size-3" />
+              删除
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+      <CollapsibleContent>
+        <div className="ml-3 border-l pl-1">
+          {sources.length ? (
+            <SourceRows
+              sources={sources}
+              projectContextId={project.id}
+              {...actions}
+            />
+          ) : (
+            <p className="p-2 text-[11px] text-muted-foreground">暂无链接。</p>
+          )}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+async function copyProjectSources(sources: Source[], withTitle: boolean) {
+  const text = sources
+    .map((source) => formatSource(source, withTitle))
+    .join('\n');
+  await navigator.clipboard.writeText(text);
+}
+
+async function copySource(source: Source, withTitle: boolean) {
+  await navigator.clipboard.writeText(formatSource(source, withTitle));
+}
+
+function formatSource(source: Source, withTitle: boolean) {
+  return withTitle
+    ? `- [${escapeMarkdownTitle(source.title)}](${escapeMarkdownUrl(source.originalUrl)})`
+    : source.originalUrl;
+}
+
+function escapeMarkdownTitle(value: string) {
+  return value.replace(/([\\\[\]])/g, '\\$1');
+}
+
+function escapeMarkdownUrl(value: string) {
+  return value.replace(/([\\()])/g, '\\$1');
+}
+
+function SourceRows({
+  sources,
+  projectContextId,
+  ...actions
+}: {
+  sources: Source[];
+  projectContextId?: string;
+} & SourceActions) {
+  return (
+    <ul>
+      {sources.map((source) => (
+        <li
+          key={source.id}
+          className="group flex cursor-pointer items-start gap-2 rounded-lg px-2 py-1.5 hover:bg-muted"
+          tabIndex={0}
+          role="link"
+          onClick={(e) => {
+            if (
+              !e.defaultPrevented &&
+              !(e.target as HTMLElement).closest('[data-source-row-action]')
+            )
+              void chrome.tabs.create({ url: source.originalUrl });
+          }}
+          onKeyDown={(e) => {
+            if (
+              !e.defaultPrevented &&
+              e.target === e.currentTarget &&
+              e.key === 'Enter'
+            )
+              void chrome.tabs.create({ url: source.originalUrl });
+          }}
+        >
+          <SourceIdentity source={source} showMemo />
+          <SourceActionsMenu
+            source={source}
+            projectContextId={projectContextId}
+            {...actions}
+          />
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+export function PinnedSources({
+  sources,
+  ...actions
+}: { sources: Source[] } & SourceActions) {
+  if (!sources.length) return null;
+  return (
+    <section>
+      <h2 className="px-3 py-2 text-xs font-medium">Pinned</h2>
+      <div className="flex flex-wrap gap-2 px-2">
+        {sources.map((source) => (
+          <PinnedItem key={source.id} source={source} {...actions} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function PinnedItem({
+  source,
+  ...actions
+}: { source: Source } & SourceActions) {
+  const [open, setOpen] = useState(false);
+  const closeTimer = useRef<number | null>(null);
+
+  useEffect(
+    () => () => {
+      if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
+    },
+    []
+  );
+
+  const keepOpen = () => {
+    if (closeTimer.current !== null) {
+      window.clearTimeout(closeTimer.current);
+      closeTimer.current = null;
+    }
+    setOpen(true);
+  };
+
+  const closeSoon = () => {
+    if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
+    closeTimer.current = window.setTimeout(() => {
+      setOpen(false);
+      closeTimer.current = null;
+    }, 120);
+  };
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          className="rounded-md focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+          aria-label={`预览 ${source.title}`}
+          onMouseEnter={keepOpen}
+          onMouseLeave={closeSoon}
+          onFocus={keepOpen}
+          onBlur={closeSoon}
+        >
+          <SourceAvatar source={source} className="size-5" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        side="bottom"
+        align="start"
+        sideOffset={6}
+        collisionPadding={8}
+        className="w-64 max-w-[calc(100vw-1rem)] gap-0 p-3"
+        onMouseEnter={keepOpen}
+        onMouseLeave={closeSoon}
+        onFocusCapture={keepOpen}
+        onBlurCapture={closeSoon}
+        onOpenAutoFocus={(event) => event.preventDefault()}
+        onCloseAutoFocus={(event) => event.preventDefault()}
+      >
+        <div className="flex items-start gap-2">
+          <SourceIdentity source={source} />
+          <Button
+            size="icon-xs"
+            variant="ghost"
+            aria-label={`取消置顶 ${source.title}`}
+            title="取消置顶"
+            onClick={() => actions.onTogglePin(source)}
+          >
+            <PinOff />
+          </Button>
+        </div>
+        {source.memo && (
+          <p className="mt-2 whitespace-pre-wrap text-xs">{source.memo}</p>
+        )}
+        <p className="mt-2 text-[10px] text-muted-foreground">
+          Projects: {source.projects.map((p) => p.name).join(', ') || 'Inbox'}
+        </p>
+        <p className="text-[10px] text-muted-foreground">
+          Added {new Date(source.addedAt).toLocaleDateString()}
+        </p>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+export function SourceListSkeleton() {
+  return (
+    <div className="space-y-2">
+      {[1, 2, 3, 4].map((i) => (
+        <Skeleton key={i} className="h-10 w-full" />
+      ))}
+    </div>
+  );
+}

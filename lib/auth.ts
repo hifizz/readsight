@@ -1,6 +1,5 @@
-export const AUTH_TOKEN_KEY = 'readsight:auth-token';
-export const AUTH_USER_KEY = 'readsight:auth-user';
-export const KNOWN_ITEMS_KEY = 'readsight:known-items';
+export const AUTH_TOKEN_KEY = 'relata:auth-token';
+export const AUTH_USER_KEY = 'relata:auth-user';
 
 export interface AuthUser { id: string; email: string; name: string }
 
@@ -18,11 +17,10 @@ export async function getStoredAuthUser(): Promise<AuthUser | null> {
 
 export async function storeAuth(token: string, user: AuthUser): Promise<void> {
   await chrome.storage.local.set({ [AUTH_TOKEN_KEY]: token, [AUTH_USER_KEY]: user });
-  await chrome.storage.local.remove(KNOWN_ITEMS_KEY);
 }
 
 export async function clearAuth(): Promise<void> {
-  await chrome.storage.local.remove([AUTH_TOKEN_KEY, AUTH_USER_KEY, KNOWN_ITEMS_KEY]);
+  await chrome.storage.local.remove([AUTH_TOKEN_KEY, AUTH_USER_KEY]);
 }
 
 export async function authHeaders(extra?: HeadersInit): Promise<Headers> {
@@ -59,7 +57,12 @@ export async function signInWithEmail(backendUrl: string, email: string, passwor
   return result.user;
 }
 
-export async function registerWithEmail(backendUrl: string, email: string, password: string): Promise<AuthUser> {
+export async function registerWithEmail(
+  backendUrl: string,
+  email: string,
+  password: string,
+  name?: string,
+): Promise<AuthUser> {
   const normalized = email.trim().toLowerCase();
   const response = await fetch(`${backendUrl}/api/auth/sign-up/email`, {
     method: 'POST',
@@ -67,7 +70,7 @@ export async function registerWithEmail(backendUrl: string, email: string, passw
     body: JSON.stringify({
       email: normalized,
       password,
-      name: normalized.split('@')[0] || 'Readsight user',
+      name: name?.trim() || normalized.split('@')[0] || 'Relata user',
     }),
   });
   const result = await readAuthResponse(response);
