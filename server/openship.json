@@ -1,0 +1,13 @@
+{
+  "$schema": "https://openship.io/openship.schema.json",
+  "framework": "nextjs",
+  "packageManager": "pnpm",
+  "installCommand": "pnpm install --frozen-lockfile",
+  "buildCommand": "pnpm build",
+  "startCommand": "pnpm db:migrate && pnpm start",
+  "buildImage": "node:22",
+  "port": 4010,
+  "domains": [
+    { "domain": "relata.zilin.im", "type": "custom" }
+  ]
+}
