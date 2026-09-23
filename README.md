@@ -31,3 +31,6 @@ pnpm --dir server build
 
 `docs/archive/readsight-legacy/` 与 `openspec/**/archive/readsight-legacy/` 只保留历史资料，
 不属于 Relata 的规范或实现依据。
+
+曼谷 OpenShip 生产环境、数据迁移及日常查询入口见
+[`docs/operations-bangkok.md`](./docs/operations-bangkok.md)。
