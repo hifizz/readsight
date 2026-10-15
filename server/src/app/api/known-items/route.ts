@@ -6,18 +6,24 @@
  *
  * 只计 lookup / deepchat / quick 这三种主动事件 —— passive 本身不让用户"已知"。
  */
-import { sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { encounterEvents } from '@/db/schema';
+import { requireUser } from '@/lib/require-user';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
+export async function GET(req: Request) {
+  const authResult = await requireUser(req);
+  if (!authResult.ok) return authResult.response;
   try {
     const rows = await db
       .select({ itemKey: encounterEvents.itemKey })
       .from(encounterEvents)
-      .where(sql`${encounterEvents.eventType} IN ('lookup','deepchat','quick')`)
+      .where(and(
+        eq(encounterEvents.userId, authResult.user.id),
+        sql`${encounterEvents.eventType} IN ('lookup','deepchat','quick')`,
+      ))
       .groupBy(encounterEvents.itemKey);
     const lemmas = new Set<string>();
     for (const r of rows) {

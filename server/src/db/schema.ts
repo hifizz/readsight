@@ -11,13 +11,96 @@
  * 本期 schema 已经为 M2 (EncounterEvent 落库) / M4 (FSRS 调度) 留好坑位，
  * 但 `/api/chat` 暂时不写 encounter_events，PRD §5.2 落库逻辑留到下一迭代。
  */
-import { pgSchema, text, jsonb, timestamp, integer, index } from 'drizzle-orm/pg-core';
+import {
+  pgSchema,
+  text,
+  jsonb,
+  timestamp,
+  integer,
+  bigint,
+  boolean,
+  date,
+  index,
+  uniqueIndex,
+  primaryKey,
+} from 'drizzle-orm/pg-core';
 
 /**
  * 所有 Readsight 业务对象都放在独立 PostgreSQL schema，避免与同一 database
  * 中其他项目的 public 表、enum 和 Drizzle 迁移记录发生冲突。
  */
 export const readsightSchema = pgSchema('readsight');
+
+// Better Auth core tables. Property names intentionally match Better Auth's
+// model keys; physical columns remain snake_case.
+export const user = readsightSchema.table('user', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  email: text('email').notNull().unique(),
+  emailVerified: boolean('email_verified').notNull().default(false),
+  image: text('image'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const session = readsightSchema.table(
+  'session',
+  {
+    id: text('id').primaryKey(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    token: text('token').notNull().unique(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    ipAddress: text('ip_address'),
+    userAgent: text('user_agent'),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+  },
+  (t) => [index('session_user_id_idx').on(t.userId)],
+);
+
+export const account = readsightSchema.table(
+  'account',
+  {
+    id: text('id').primaryKey(),
+    accountId: text('account_id').notNull(),
+    providerId: text('provider_id').notNull(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    accessToken: text('access_token'),
+    refreshToken: text('refresh_token'),
+    idToken: text('id_token'),
+    accessTokenExpiresAt: timestamp('access_token_expires_at', { withTimezone: true }),
+    refreshTokenExpiresAt: timestamp('refresh_token_expires_at', { withTimezone: true }),
+    scope: text('scope'),
+    password: text('password'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('account_user_id_idx').on(t.userId)],
+);
+
+export const verification = readsightSchema.table(
+  'verification',
+  {
+    id: text('id').primaryKey(),
+    identifier: text('identifier').notNull(),
+    value: text('value').notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('verification_identifier_idx').on(t.identifier)],
+);
+
+export const rateLimit = readsightSchema.table('rate_limit', {
+  id: text('id').primaryKey(),
+  key: text('key').notNull().unique(),
+  count: integer('count').notNull(),
+  lastRequest: bigint('last_request', { mode: 'number' }).notNull(),
+});
 
 export const eventTypeEnum = readsightSchema.enum('encounter_event_type', [
   'lookup',
@@ -51,6 +134,7 @@ export const chatRoleEnum = readsightSchema.enum('chat_role', [
  */
 export const selectionContexts = readsightSchema.table('selection_contexts', {
   id: text('id').primaryKey(),
+  userId: text('user_id').references(() => user.id, { onDelete: 'cascade' }),
   capturedAt: timestamp('captured_at', { withTimezone: true }).notNull().defaultNow(),
   url: text('url').notNull(),
   title: text('title').notNull(),
@@ -68,7 +152,10 @@ export const selectionContexts = readsightSchema.table('selection_contexts', {
   anchor: jsonb('anchor')
     .$type<{ quote: { exact: string; prefix: string; suffix: string }; blockIndex?: number }>()
     .notNull(),
-});
+}, (t) => [
+  index('selection_contexts_user_captured_idx').on(t.userId, t.capturedAt),
+  uniqueIndex('selection_contexts_id_user_idx').on(t.id, t.userId),
+]);
 
 /**
  * PRD §5.2 EncounterEvent —— 学习模型 (FSRS / HLR) 的事件流输入。
@@ -85,6 +172,7 @@ export const encounterEvents = readsightSchema.table(
   'encounter_events',
   {
     id: text('id').primaryKey(),
+    userId: text('user_id').references(() => user.id, { onDelete: 'cascade' }),
     itemKey: text('item_key').notNull(),
     surfaceForm: text('surface_form').notNull(),
     // 主动事件 (lookup / deepchat / quick) 必有选区；被动重逢
@@ -99,9 +187,9 @@ export const encounterEvents = readsightSchema.table(
   },
   (t) => [
     // 按 lemma 聚合的高频读，单列 btree 已够。
-    index('encounter_events_item_key_idx').on(t.itemKey),
+    index('encounter_events_user_item_key_idx').on(t.userId, t.itemKey),
     // 按时间线扫描所有事件（FSRS 算复习间隔 Δ 用）。
-    index('encounter_events_ts_idx').on(t.ts),
+    index('encounter_events_user_ts_idx').on(t.userId, t.ts),
   ],
 );
 
@@ -114,6 +202,7 @@ export const chatMessages = readsightSchema.table(
   'chat_messages',
   {
     id: text('id').primaryKey(),
+    userId: text('user_id').references(() => user.id, { onDelete: 'cascade' }),
     threadId: text('thread_id').notNull(),
     selectionContextId: text('selection_context_id').references(() => selectionContexts.id, {
       onDelete: 'set null',
@@ -122,7 +211,21 @@ export const chatMessages = readsightSchema.table(
     content: jsonb('content').$type<unknown>().notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('chat_messages_thread_id_idx').on(t.threadId)],
+  (t) => [index('chat_messages_user_thread_idx').on(t.userId, t.threadId, t.createdAt)],
+);
+
+export const dailyUsage = readsightSchema.table(
+  'daily_usage',
+  {
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    usageDate: date('usage_date').notNull(),
+    metric: text('metric').notNull(),
+    amount: integer('amount').notNull().default(0),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.usageDate, t.metric] })],
 );
 
 /**

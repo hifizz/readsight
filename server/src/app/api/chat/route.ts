@@ -24,6 +24,8 @@ import { upsertSelectionContext, type SelectionContextDTO } from '@/lib/selectio
 import { recordEncounter } from '@/lib/encounter';
 import { lookupWord } from '@/lib/lookup';
 import { ACTION_TAG_PROMPTS, type ActionTag } from '@/lib/action-tags';
+import { requireUser } from '@/lib/require-user';
+import { quotaExceededResponse, reserveUsage } from '@/lib/quota';
 
 export const maxDuration = 30;
 export const dynamic = 'force-dynamic';
@@ -84,6 +86,10 @@ function extractUserText(m: UIMessage | undefined): string {
 }
 
 export async function POST(req: Request) {
+  const authResult = await requireUser(req);
+  if (!authResult.ok) return authResult.response;
+  const quota = await reserveUsage(authResult.user.id, 'chat_requests');
+  if (!quota.allowed) return quotaExceededResponse(quota);
   if (!isDeepseekConfigured() || !deepseekV4ProChat) {
     return Response.json(
       {
@@ -101,7 +107,15 @@ export async function POST(req: Request) {
   // 1) 同步 upsert SelectionContext —— 后续 onFinish 写 chat_messages 时
   //    threadId(=ctx.id) 外键依赖它存在
   if (ctx) {
-    await upsertSelectionContext(ctx);
+    try {
+      await upsertSelectionContext(authResult.user.id, ctx);
+    } catch (err) {
+      const conflict = err instanceof Error && err.message === 'selection_context_conflict';
+      return Response.json(
+        { error: conflict ? 'selection_context_conflict' : 'selection_context_failed' },
+        { status: conflict ? 409 : 500 },
+      );
+    }
   }
 
   const messages = body.messages ?? [];
@@ -125,6 +139,7 @@ export async function POST(req: Request) {
           if (userText) {
             await db.insert(chatMessages).values({
               id: crypto.randomUUID(),
+              userId: authResult.user.id,
               threadId,
               selectionContextId: ctx.id,
               role: 'user',
@@ -133,6 +148,7 @@ export async function POST(req: Request) {
           }
           await db.insert(chatMessages).values({
             id: crypto.randomUUID(),
+            userId: authResult.user.id,
             threadId,
             selectionContextId: ctx.id,
             role: 'assistant',
@@ -149,6 +165,7 @@ export async function POST(req: Request) {
           try {
             const lookup = await lookupWord(ctx.selection.text);
             void recordEncounter({
+              userId: authResult.user.id,
               surfaceForm: ctx.selection.text,
               itemKey: lookup.itemKey,
               contextRef: ctx.id,

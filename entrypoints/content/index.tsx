@@ -21,9 +21,9 @@ import { ImmersiveReader } from './immersive-reader';
 import { SelectionPopup, openPopup, useIsPopupOpen } from './popup';
 import { clearDomainRule } from '@/lib/domain-rules';
 import { useSettings } from '@/lib/settings';
+import { authFetch, KNOWN_ITEMS_KEY } from '@/lib/auth';
 
 const BACKEND = import.meta.env.WXT_BACKEND_URL ?? 'http://localhost:4010';
-const KNOWN_ITEMS_KEY = 'readsight:known-items';
 const KNOWN_ITEMS_TTL_MS = 5 * 60 * 1000;
 const SCAN_MAX_CHARS = 5000;
 
@@ -322,7 +322,7 @@ async function fetchKnownLemmas(): Promise<Set<string>> {
     if (entry && entry.expiresAt > Date.now()) {
       return new Set(entry.lemmas);
     }
-    const res = await fetch(`${BACKEND}/api/known-items`);
+    const res = await authFetch(`${BACKEND}/api/known-items`);
     if (!res.ok) return new Set();
     const data = (await res.json()) as { lemmas: string[] };
     const lemmas = data.lemmas ?? [];

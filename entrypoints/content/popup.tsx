@@ -34,6 +34,7 @@ import type {
 import { actionsForSelectionType } from '@/lib/action-tags';
 import { useDraggable } from '@/lib/use-draggable';
 import { DictCard, DICT_CARD_CSS } from '@/components/dict-card';
+import { authFetch } from '@/lib/auth';
 
 const BACKEND = import.meta.env.WXT_BACKEND_URL ?? 'http://localhost:4010';
 
@@ -358,6 +359,7 @@ type LookupState =
   | { kind: 'idle' }
   | { kind: 'loading' }
   | { kind: 'ok'; data: LookupResult }
+  | { kind: 'signed-out' }
   | { kind: 'miss' };
 
 /**
@@ -377,13 +379,20 @@ function useInlineLookup(ctx: SelectionContext | null): LookupState {
     setState({ kind: 'loading' });
     // POST 带 selectionContext，让 server 端同时落 encounter 事件到学习记录。
     // ECDICT 命中时响应里会带 extras（tag / collins / exchange...）
-    fetch(`${BACKEND}/api/lookup`, {
+    authFetch(`${BACKEND}/api/lookup`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ word: ctx.selection.text, selectionContext: ctx }),
     })
-      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`http ${res.status}`))))
-      .then((data: LookupResult) => {
+      .then((res) => {
+        if (res.status === 401) {
+          if (!cancelled) setState({ kind: 'signed-out' });
+          return null;
+        }
+        return res.ok ? res.json() : Promise.reject(new Error(`http ${res.status}`));
+      })
+      .then((data: LookupResult | null) => {
+        if (!data) return;
         if (cancelled) return;
         if (!data.partsOfSpeech?.length) {
           setState({ kind: 'miss' });
@@ -435,14 +444,15 @@ function useInlineTranslate(): {
     const myId = ++reqIdRef.current;
     setState({ kind: 'loading' });
     // 单段批量调用；服务端会查缓存命中直接返回
-    fetch(`${BACKEND}/api/translate`, {
+    authFetch(`${BACKEND}/api/translate`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ blocks: [{ id: '0', text: trimmed }] }),
     })
-      .then((res) =>
-        res.ok ? res.json() : Promise.reject(new Error(`http ${res.status}`)),
-      )
+      .then((res) => {
+        if (res.status === 401) throw new Error('sign_in_required');
+        return res.ok ? res.json() : Promise.reject(new Error(`http ${res.status}`));
+      })
       .then((data: { results: TranslationResult[] }) => {
         if (myId !== reqIdRef.current) return;
         const r = data.results?.[0];
@@ -465,7 +475,7 @@ function useInlineTranslate(): {
       .catch((err) => {
         if (myId !== reqIdRef.current) return;
         console.warn('[readsight] inline translate failed', err);
-        setState({ kind: 'error', message: '翻译失败' });
+        setState({ kind: 'error', message: err instanceof Error && err.message === 'sign_in_required' ? '请先登录后使用翻译' : '翻译失败' });
       });
   }, []);
 
@@ -691,6 +701,15 @@ export function SelectionPopup() {
           <div className="eag-miss">
             <span className="eag-est">词典未命中</span>
             <span>音标 / 释义将走 LLM 兜底。</span>
+          </div>
+        )}
+
+        {isWord && lookup.kind === 'signed-out' && (
+          <div className="eag-miss">
+            <span>登录后查询并保存到你的学习记录。</span>
+            <button type="button" className="eag-translate-retry" onClick={() => { sendAsk({ ctx }); closePopup(); }}>
+              打开侧边栏登录
+            </button>
           </div>
         )}
 

@@ -37,33 +37,32 @@ export interface SelectionContextDTO {
  * 幂等：如果 id 已存在直接返回；不存在则 insert。
  * @returns 行存在与否，调用方一般不关心
  */
-export async function upsertSelectionContext(ctx: SelectionContextDTO): Promise<{ created: boolean }> {
-  try {
-    const existing = await db
-      .select({ id: selectionContexts.id })
-      .from(selectionContexts)
-      .where(eq(selectionContexts.id, ctx.id))
-      .limit(1);
-    if (existing.length > 0) return { created: false };
-
-    await db.insert(selectionContexts).values({
-      id: ctx.id,
-      capturedAt: new Date(ctx.capturedAt),
-      url: ctx.source.url,
-      title: ctx.source.title,
-      siteId: ctx.source.siteId,
-      heading: ctx.source.heading,
-      selectionText: ctx.selection.text,
-      selectionType: ctx.selection.type,
-      rangeStart: ctx.selection.range[0],
-      rangeEnd: ctx.selection.range[1],
-      sentence: ctx.context.sentence,
-      paragraph: ctx.context.paragraph,
-      anchor: ctx.anchor,
-    });
-    return { created: true };
-  } catch (err) {
-    console.warn('[selection-context] upsert failed', err);
+export async function upsertSelectionContext(userId: string, ctx: SelectionContextDTO): Promise<{ created: boolean }> {
+  const existing = await db
+    .select({ id: selectionContexts.id, userId: selectionContexts.userId })
+    .from(selectionContexts)
+    .where(eq(selectionContexts.id, ctx.id))
+    .limit(1);
+  if (existing.length > 0) {
+    if (existing[0].userId !== userId) throw new Error('selection_context_conflict');
     return { created: false };
   }
+
+  await db.insert(selectionContexts).values({
+    id: ctx.id,
+    userId,
+    capturedAt: new Date(ctx.capturedAt),
+    url: ctx.source.url,
+    title: ctx.source.title,
+    siteId: ctx.source.siteId,
+    heading: ctx.source.heading,
+    selectionText: ctx.selection.text,
+    selectionType: ctx.selection.type,
+    rangeStart: ctx.selection.range[0],
+    rangeEnd: ctx.selection.range[1],
+    sentence: ctx.context.sentence,
+    paragraph: ctx.context.paragraph,
+    anchor: ctx.anchor,
+  });
+  return { created: true };
 }
