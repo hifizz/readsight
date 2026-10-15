@@ -1,6 +1,6 @@
 {
-  "name": "wxt-react-starter",
-  "description": "manifest.json description",
+  "name": "readsight",
+  "description": "见微 Readsight — 沉浸式英语精读 Chrome 扩展（划词精读 + 全文双语翻译 + 学习记录）",
   "private": true,
   "version": "0.0.0",
   "type": "module",

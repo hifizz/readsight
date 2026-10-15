@@ -7,6 +7,15 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* 声明 color-scheme：让原生滚动条 / 表单控件跟随明暗主题
+ * （学习记录、设置等 overflow 容器用的是原生滚动条，不声明会画成浅色） */
+:root {
+  color-scheme: light;
+}
+.dark {
+  color-scheme: dark;
+}
+
 html,
 body,
 #root {
