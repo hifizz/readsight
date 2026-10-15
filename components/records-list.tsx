@@ -3,6 +3,7 @@
  *
  * 拉 /api/history，按 itemKey 聚合的列表卡片。每张卡：
  *   - 顶行：lemma + (surfaceForm) + 时间（右上角）
+ *   - 释义行：dictionary_entries 缓存里抽的一行 gloss（命中时显示）
  *   - 中间：语境窗口（高亮 surfaceForm）—— 这是卡的真正营养
  *   - 底栏：域名 + 次数/事件 chip + "回原文"外链按钮
  *
@@ -25,6 +26,14 @@ export interface HistoryRecord {
   lastSentence?: string | null;
   /** 原文 URL，用来抽 domain；缺失时显示 itemKey 的来源 fallback。 */
   lastUrl?: string | null;
+  /** 词典缓存里的一行紧凑释义（/api/history 由 dictionary_entries 抽出）；未查过时缺失。 */
+  lastGloss?: {
+    pos?: string;
+    cn?: string;
+    en?: string;
+    /** LLM 兜底生成的条目（estimated: true），UI 打"估计"标记 */
+    estimated?: boolean;
+  } | null;
 }
 
 const HL_BG = '#fdeeb8';
@@ -147,6 +156,9 @@ function RecordCard({
         </span>
       </div>
 
+      {/* 释义：dictionary_entries 缓存的一行 gloss（cn 主、en 辅）*/}
+      {renderGloss(record.lastGloss)}
+
       {/* 语境：开窗 + 高亮 surfaceForm（卡片的真正营养）*/}
       {win && win.match && (
         <div className="mt-1.5 line-clamp-2 text-[12.5px] leading-[1.55] text-muted-foreground">
@@ -182,6 +194,32 @@ function RecordCard({
         </span>
       </div>
     </button>
+  );
+}
+
+function renderGloss(gloss: HistoryRecord['lastGloss']) {
+  if (!gloss || (!gloss.cn && !gloss.en)) return null;
+  return (
+    <div className="mt-1.5">
+      <div className="flex min-w-0 items-baseline gap-1 text-[13px] leading-[1.45]">
+        {gloss.pos && (
+          <span className="shrink-0 text-[12px] italic text-muted-foreground">{gloss.pos}.</span>
+        )}
+        <span className="line-clamp-1 font-medium text-foreground">
+          {gloss.cn ?? gloss.en}
+        </span>
+        {gloss.estimated && (
+          <span className="shrink-0 rounded bg-muted px-1 py-px text-[10px] leading-[1.4] text-muted-foreground">
+            估计
+          </span>
+        )}
+      </div>
+      {gloss.cn && gloss.en && (
+        <div className="mt-0.5 line-clamp-1 text-[11.5px] leading-[1.45] text-muted-foreground/90">
+          {gloss.en}
+        </div>
+      )}
+    </div>
   );
 }
 
