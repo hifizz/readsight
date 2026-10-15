@@ -17,6 +17,7 @@ web-ext.config.ts
 # env (extension + server)
 .env.local
 .env.*.local
+.env.production
 server/.env.local
 server/.env.*.local
 
