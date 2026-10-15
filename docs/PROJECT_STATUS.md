@@ -30,7 +30,7 @@
 | Sidepanel chat | ✅ | assistant-ui Thread + ThreadList（Popover 折叠在右上角，不挤占对话区） |
 | 每次新选区开新 thread | ✅ | `runtime.threads.switchToNewThread()` 自动归档旧对话 |
 | 单词词典卡 WordCard | ✅ | IPA / 真人音频 ▶ / 词性 / 英文释义 / 中文释义 |
-| 短语 / 句子 TTS 朗读 | ✅ | ContextCard 右上喇叭按钮 → MiniMax `speech-2.8-hd` |
+| 短语 / 句子 TTS 朗读 | ✅ | ContextCard 右上喇叭按钮 → 浏览器本地 speechSynthesis（en-US，无后端 TTS） |
 | 中文释义 | ✅ | 英文 def 下方挂中文短译，淡色辅助阅读 |
 | LLM 上下文化解读 | ✅ | `/api/chat` system prompt 注入 selection / sentence / paragraph，按 selection.type 分支引导 LLM 讲"在这一句里特殊用法 vs 普通用法" |
 | 重试按钮 | ✅ | MessageError 内嵌 `ActionBarPrimitive.Reload` 官方原语 |
@@ -70,13 +70,12 @@
 
 按时间顺序，每条都标"为什么这样做"。
 
-### 3.1 LLM 分工：MiniMax 做对话 / Zhipu 做翻译
+### 3.1 LLM 分工：DeepSeek 做对话 / DeepSeek → Zhipu → OpenRouter 链做翻译与词典
 
-- **场景**：lookup 翻译、`/api/translate` 全文翻译
-- **决策**：用 **Zhipu GLM-4-Flash**（中国区，免费、~200-400ms 响应）
-- **MiniMax 保留**：`/api/chat`（语境化解读）+ TTS
-- **为什么不用 MiniMax 翻译**：MiniMax-M2.x 是 thinking 模型，单次翻 2 段就吃 700+ token 推理；`-highspeed` 变体名义上非推理但实测当前 plan 不解锁（"0/0 used"）
-- **为什么不用 MiniMax 兜底**：早期保留 fallback 路径，后来发现 GLM 失败时 MiniMax thinking 也常常超时，反而拖慢失败感知。**砍掉兜底，统一走 retry**
+- **场景**：`/api/chat` 语境化解读、`/api/lookup` 词典模型辅助、`/api/translate` 全文翻译
+- **决策**：对话走 **DeepSeek `deepseek-v4-pro`**；全文翻译与词典辅助走 **`deepseek-v4-flash`**，fallback 链 DeepSeek → Zhipu GLM-4-Flash → OpenRouter（均禁用 thinking）
+- **为什么放弃 MiniMax**：M2.x 是 thinking 模型，翻译性价比差、兜底常超时；TTS 已改用浏览器本地 `speechSynthesis`。MiniMax 依赖与密钥已于 2026-10-15 全部移除
+
 
 ### 3.2 视口驱动 + 批处理 + 并发限制
 
@@ -154,7 +153,7 @@
 |---|---|---|
 | `dictionary_entries` | `lemma` | 单词查询结果 |
 | `translations` | `sha256(model + lang + text)` | 全文翻译段落 |
-| `tts_cache` | `sha256(model + voice + text)` | MiniMax TTS 音频 |
+| `tts_cache` | `sha256(model + voice + text)` | 遗留表：TTS 已改本地 speechSynthesis，暂无写入方，待清理 |
 
 **共同模式**：内容寻址 cache，写入用 `onConflictDoNothing` 幂等，命中即秒回。文本不变 → 永远复用。
 
@@ -196,17 +195,15 @@ WXT 0.20 + Vite + React 19 + TypeScript
 Next.js 16.2（App Router，无 Turbopack 在 lookup 路径绕开 fetch patch）
 ├── Drizzle ORM v0.45 + postgres-js
 ├── AI SDK v6（streamText / generateText / convertToModelMessages）
-├── vercel-minimax-ai-provider（MiniMax 走 Anthropic-format）
 ├── @ai-sdk/openai-compatible（Zhipu 走 OpenAI 协议）
 ├── undici（绕开 Next Turbopack fetch patch，M3 lookup 学到的坑）
 └── wink-lemmatizer（服务端 lemma 还原）
 ```
 
 5 条路由：
-- `POST /api/chat` —— assistant-ui streaming，MiniMax M2.1
-- `POST /api/lookup` + `GET /api/lookup` —— 词典查询，Free Dictionary + Zhipu 中文翻译 + MiniMax LLM 兜底
-- `POST /api/translate` —— 全文翻译，Zhipu GLM-4-Flash + divide-and-conquer 兜底
-- `GET /api/tts` —— TTS，MiniMax speech-2.8-hd
+- `POST /api/chat` —— assistant-ui streaming，DeepSeek v4-pro
+- `POST /api/lookup` + `GET /api/lookup` —— 词典查询，cache → ECDICT → Free Dictionary → DeepSeek v4-flash 兜底
+- `POST /api/translate` —— 全文翻译，DeepSeek v4-flash + divide-and-conquer 兜底
 - `GET /api/history` —— 学习记录聚合
 - `GET /api/known-items` —— 用户已查 lemma 集合（被动重逢用）
 - `POST /api/encounter` —— passive_reencounter 上报
@@ -216,8 +213,9 @@ Next.js 16.2（App Router，无 Turbopack 在 lookup 路径绕开 fetch patch）
 
 | 服务 | 用途 | 计费 |
 |---|---|---|
-| MiniMax China (`api.minimaxi.com`) | 对话主力 + TTS | Plus 包年付费 |
-| Zhipu GLM-4-Flash (`open.bigmodel.cn`) | 翻译 / lookup 中文释义 | 免费 |
+| DeepSeek（v4-pro / v4-flash） | 对话主力 + 翻译 / 词典辅助 | 按 token 计费 |
+| Zhipu GLM-4-Flash (`open.bigmodel.cn`) | 翻译 / 词典兜底 | 免费 |
+| OpenRouter | 西方模型第二兜底 | 按 token 计费 |
 | Free Dictionary API | 英语词典 + IPA + 真人音频 | 免费无限 |
 | Postgres (Docker) | 数据持久化 | 本地 |
 
@@ -240,10 +238,9 @@ Next.js 16.2（App Router，无 Turbopack 在 lookup 路径绕开 fetch patch）
 1. **高亮停在段落级**：M2 Phase D 当时用 block element 整段变色，未做 text node 范围精确 `<mark>`。等 Chrome CSS Custom Highlight API 成熟使用更优雅
 2. **content script bundle 1.97 MB**：主要来自 wink-lemmatizer + Mozilla Readability。可接受
 3. **`/api/encounter` POST 无鉴权**：单用户开发期 OK；上线前必须加 cookie / JWT
-4. **MiniMax `-highspeed` 路径死代码**：plan 不解锁，但代码留着未来切换零成本
-5. **Free Dictionary fetch 偶发超时**：8s timeout 偏紧，但延长会让用户等更久；目前的 LLM 兜底足够
-6. **测试套件**：完全没写。架构稳定后批量补，PRD §11 已规划
-7. **多语言**：当前只英 → 中。日 / 韩 / 西等待扩展
+4. **Free Dictionary fetch 偶发超时**：8s timeout 偏紧，但延长会让用户等更久；目前的 LLM 兜底足够
+5. **测试套件**：完全没写。架构稳定后批量补，PRD §11 已规划
+6. **多语言**：当前只英 → 中。日 / 韩 / 西等待扩展
 
 ---
 

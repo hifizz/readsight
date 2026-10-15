@@ -74,7 +74,6 @@
   - `ZHIPU_API_KEY` / `OPENROUTER_API_KEY` / `OPENROUTER_MODEL` / `TRANSLATE_PRIMARY`（全文翻译 fallback 或路由覆盖）
   - `ECDICT_PATH=/app/data/ecdict.sqlite`
   - `NODE_ENV=production`
-- 完成后端与扩展的联合上线、并经过回滚窗口后，从 Coolify 等外部密钥存储中移除遗留的 `MINIMAX_API_KEY` 和 `MINIMAX_CHAT_MODEL`；新部署不应配置它们。
 - Domains: 绑你自己的子域（如 `eag-api.yourdomain.com`），Coolify 自动签 TLS
 - Health Check: `GET /api/known-items` 200 就行（这个端点不用 LLM，瞬响）
 
