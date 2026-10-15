@@ -83,7 +83,7 @@ coolify deploy uuid lu2vcbh5j26vj9mn11wdh7n8
 ```
 > 当前 DEEPSEEK/ZHIPU/OPENROUTER 用的是 **dev key**，正式对外前按此流程轮换。`DEEPSEEK_API_KEY` 是必填项：它支持 V4-Pro 侧栏对话、V4-Flash 词典模型辅助和主翻译；Zhipu、OpenRouter 保留为全文翻译 fallback。
 >
-> 后端和扩展联合上线并过了回滚窗口后，从 Coolify 的环境变量和本地 gitignored 配置中删除遗留的 `MINIMAX_API_KEY`、`MINIMAX_CHAT_MODEL`。浏览器朗读走本地 `speechSynthesis`，不需要云端 TTS 密钥。
+> 遗留的 `MINIMAX_API_KEY`（`MINIMAX_CHAT_MODEL` 线上本就未配置）已于 2026-10-15 从 Coolify 环境变量和本地 gitignored 配置中清理完毕。浏览器朗读走本地 `speechSynthesis`，不需要云端 TTS 密钥。
 
 ## 6. 已踩的坑（重要，别再犯）
 
