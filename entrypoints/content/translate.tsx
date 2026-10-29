@@ -527,6 +527,7 @@ function injectTranslation(
     // 也可能在 OpenRouter 兜底接通后第二次成功，给用户主动权
     let prefixText = '翻译未能完成 · ';
     if (result.error === 'content_filtered') prefixText = '⛔ 内容审查拦截 · ';
+    else if (result.error === 'no_key') prefixText = '请先在设置里填写 API Key · ';
     else if (isBadZh) prefixText = '⚠ 译文异常 · ';
 
     const msg = document.createElement('span');

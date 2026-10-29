@@ -30,7 +30,14 @@ export default defineConfig({
     // 见 docs/09-对外宣传与上架物料.md §二「名称候选 · 主推」
     name: '见微 Readsight：英文精读阅读伙伴',
     description: '沉浸式英语精读 (任意英文页 · 划词精读 + 双语翻译)',
-    permissions: ['sidePanel', 'storage', 'activeTab', 'contextMenus'],
+    permissions: ['sidePanel', 'storage', 'activeTab', 'contextMenus', 'unlimitedStorage'],
+    host_permissions: [
+      'https://api.deepseek.com/*',
+      'https://api.dictionaryapi.dev/*',
+      'http://127.0.0.1/*',
+      'http://localhost/*',
+    ],
+    optional_host_permissions: ['https://*/*', 'http://*/*'],
     action: {
       // 工具栏 hover tooltip 用短版，长版只用在商店列表
       default_title: '见微 Readsight',

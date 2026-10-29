@@ -10,19 +10,16 @@
  * 本文件只管"外壳"：lemma 头部 + 折叠交互 + loading/error/empty 状态 +
  * 跟 assistant-ui scroll 协作的 anchor 保护。
  *
- * 数据来源：/api/lookup？word=<surfaceForm>，server 端 cache → ECDICT →
- * Free Dictionary → LLM 兜底（PRD §6.2）。
+ * 数据来源：background 本地查词。缓存 → Free Dictionary → 文本模型兜底。
  */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Loader2, ChevronDown } from 'lucide-react';
-import type { LookupResult, SelectionContext } from '@/lib/messaging';
+import type { BackgroundMessage, LookupResult, SelectionContext } from '@/lib/messaging';
 import { DictCard, DICT_CARD_CSS } from '@/components/dict-card';
-import { authFetch } from '@/lib/auth';
 
 interface WordCardProps {
   surfaceForm: string;
-  backendUrl: string;
-  /** 传入则后端 upsert + 落 EncounterEvent；不传走 GET 纯查询。 */
+  /** 传入则写入选区，并记一条 lookup 事件。 */
   selectionContext?: SelectionContext;
 }
 
@@ -32,7 +29,7 @@ type State =
   | { kind: 'empty' }
   | { kind: 'error'; message: string };
 
-export function WordCard({ surfaceForm, backendUrl, selectionContext }: WordCardProps) {
+export function WordCard({ surfaceForm, selectionContext }: WordCardProps) {
   const [state, setState] = useState<State>({ kind: 'loading' });
   const [open, setOpen] = useState(true);
   const [speaking, setSpeaking] = useState(false);
@@ -57,29 +54,24 @@ export function WordCard({ surfaceForm, backendUrl, selectionContext }: WordCard
     setOpen(true);
     const ctrl = new AbortController();
 
-    const promise = selectionContext
-      ? authFetch(`${backendUrl}/api/lookup`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ word: surfaceForm, selectionContext }),
-          signal: ctrl.signal,
-        })
-      : authFetch(`${backendUrl}/api/lookup?word=${encodeURIComponent(surfaceForm)}`, {
-          signal: ctrl.signal,
-        });
-
-    promise
-      .then(async (res) => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return (await res.json()) as LookupResult;
-      })
-      .then((data) => {
-        if (myReq !== reqIdRef.current) return;
-        if (!data.partsOfSpeech || data.partsOfSpeech.length === 0) {
+    const message: BackgroundMessage = {
+      type: 'LOOKUP',
+      payload: { word: surfaceForm, selectionContext },
+    };
+    chrome.runtime
+      .sendMessage(message)
+      .then((res: { ok?: boolean; result?: LookupResult; error?: string } | undefined) => {
+        if (ctrl.signal.aborted || myReq !== reqIdRef.current) return;
+        if (!res?.ok || !res.result) throw new Error(res?.error || 'lookup failed');
+        if (res.result.needsKey) {
+          setState({ kind: 'error', message: '请先在设置里填写 API Key' });
+          return;
+        }
+        if (!res.result.partsOfSpeech || res.result.partsOfSpeech.length === 0) {
           setState({ kind: 'empty' });
           return;
         }
-        setState({ kind: 'ready', data });
+        setState({ kind: 'ready', data: res.result });
       })
       .catch((err: unknown) => {
         if (myReq !== reqIdRef.current) return;
@@ -90,7 +82,7 @@ export function WordCard({ surfaceForm, backendUrl, selectionContext }: WordCard
     return () => ctrl.abort();
     // 用 ctx.id 字符串当 dep；对象 ref 每次反序列化都是新引用，会触发死循环。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [surfaceForm, backendUrl, selectionContext?.id]);
+  }, [surfaceForm, selectionContext?.id]);
 
   useLayoutEffect(() => {
     const pending = pendingScrollTopRef.current;

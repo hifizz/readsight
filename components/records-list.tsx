@@ -1,7 +1,7 @@
 /**
  * RecordsList —— Sidepanel "学习记录" tab 内容。
  *
- * 拉 /api/history，按 itemKey 聚合的列表卡片。每张卡：
+ * 读 IndexedDB，按 itemKey 聚合的列表卡片。每张卡：
  *   - 顶行：lemma + (surfaceForm) + 时间（右上角）
  *   - 释义行：dictionary_entries 缓存里抽的一行 gloss（命中时显示）
  *   - 中间：语境窗口（高亮 surfaceForm）—— 这是卡的真正营养
@@ -13,28 +13,9 @@
 import { useEffect, useState } from 'react';
 import { Loader2, BookOpen, Globe, ExternalLink } from 'lucide-react';
 import { windowAround } from '@/components/context-card';
-import { authFetch } from '@/lib/auth';
+import { getHistory, type HistoryRecord } from '@/lib/records';
 
-export interface HistoryRecord {
-  itemKey: string;
-  lastSurfaceForm: string;
-  lastTs: string;
-  lastContextRef: string;
-  totalCount: number;
-  eventTypes: string[];
-  /** 选区所在句子（M3 后端 LEFT JOIN selection_contexts 返回）；缺失时不渲染高亮窗口。 */
-  lastSentence?: string | null;
-  /** 原文 URL，用来抽 domain；缺失时显示 itemKey 的来源 fallback。 */
-  lastUrl?: string | null;
-  /** 词典缓存里的一行紧凑释义（/api/history 由 dictionary_entries 抽出）；未查过时缺失。 */
-  lastGloss?: {
-    pos?: string;
-    cn?: string;
-    en?: string;
-    /** LLM 兜底生成的条目（estimated: true），UI 打"估计"标记 */
-    estimated?: boolean;
-  } | null;
-}
+export type { HistoryRecord };
 
 const HL_BG = '#fdeeb8';
 const HL_TEXT = '#5a4300';
@@ -54,7 +35,6 @@ const EVENT_TYPE_LABEL: Record<string, string> = {
 };
 
 interface RecordsListProps {
-  backendUrl: string;
   onSelect: (record: HistoryRecord) => void;
   /** 每次切到 Records tab 时 +1，触发重新拉。 */
   refreshToken?: number;
@@ -66,30 +46,26 @@ type State =
   | { kind: 'empty' }
   | { kind: 'error'; message: string };
 
-export function RecordsList({ backendUrl, onSelect, refreshToken = 0 }: RecordsListProps) {
+export function RecordsList({ onSelect, refreshToken = 0 }: RecordsListProps) {
   const [state, setState] = useState<State>({ kind: 'loading' });
 
   useEffect(() => {
+    let cancelled = false;
     setState({ kind: 'loading' });
-    const ctrl = new AbortController();
-    authFetch(`${backendUrl}/api/history?limit=50`, { signal: ctrl.signal })
-      .then(async (res) => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return (await res.json()) as { items: HistoryRecord[] };
-      })
+    getHistory({ limit: 50 })
       .then((data) => {
-        if (!data.items || data.items.length === 0) {
-          setState({ kind: 'empty' });
-        } else {
-          setState({ kind: 'ready', items: data.items });
-        }
+        if (cancelled) return;
+        if (!data.items || data.items.length === 0) setState({ kind: 'empty' });
+        else setState({ kind: 'ready', items: data.items });
       })
       .catch((err: unknown) => {
-        if (err instanceof DOMException && err.name === 'AbortError') return;
+        if (cancelled) return;
         setState({ kind: 'error', message: String(err) });
       });
-    return () => ctrl.abort();
-  }, [backendUrl, refreshToken]);
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshToken]);
 
   if (state.kind === 'loading') {
     return (

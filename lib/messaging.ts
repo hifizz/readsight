@@ -54,8 +54,20 @@ export interface AskWithSelectionPayload {
 export type BackgroundMessage =
   | { type: 'ASK_WITH_SELECTION'; payload: AskWithSelectionPayload }
   | { type: 'SELECTION_READY'; payload: AskWithSelectionPayload }
-  /** Content script 扫描发现的被动重逢命中（PRD §5.2）；background 转发到 /api/encounter */
+  /** Content script 扫描发现的被动重逢命中；background 写入 IndexedDB */
   | { type: 'PASSIVE_HITS'; payload: Array<{ surfaceForm: string; lemma: string }> }
+  /** Content / side panel → background：查词。sendResponse 返回 LookupResult */
+  | { type: 'LOOKUP'; payload: { word: string; selectionContext?: SelectionContext } }
+  /** Content → background：已查过的 lemma 集合 */
+  | { type: 'GET_KNOWN_ITEMS' }
+  /** Side panel 工具 → content script：确认这个标签注入了 content script */
+  | { type: 'PING' }
+  /** Side panel 工具 → content script：用 Readability 抽正文 */
+  | { type: 'GET_ARTICLE'; payload?: { maxChars?: number } }
+  /** Side panel 工具 → content script：按选区原文找段落 */
+  | { type: 'GET_PARAGRAPH'; payload?: { quote?: string } }
+  /** Popup → side panel：打开设置页 */
+  | { type: 'OPEN_SETTINGS' }
   /** Sidepanel 点 records 条目 → 让 background 找到原文 tab 触发高亮（PRD §8.3） */
   | { type: 'HIGHLIGHT_REQUEST'; payload: { url: string; anchor: SelectionContext['anchor'] } }
   /** Background → content script：在当前 tab 的页面上高亮 anchor 指向的文本 */
@@ -128,6 +140,11 @@ export interface LookupResult {
   }>;
   source: 'cache' | 'ecdict' | 'free-dictionary' | 'llm';
   estimated?: boolean;
-  /** ECDICT 来源时附带 */
+  /** 词典和缓存都没有，而且用户还没填 API Key。 */
+  needsKey?: boolean;
+  /** ECDICT 来源时附带。扩展首发版不打包 ECDICT，字段保留给以后的导入数据。 */
   extras?: EcdictExtras;
 }
+
+/** content script 用的 known-items 缓存键。存在 session，不进 sync。 */
+export const KNOWN_ITEMS_CACHE_KEY = 'readsight:known-items';
