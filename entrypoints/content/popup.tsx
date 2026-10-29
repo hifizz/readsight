@@ -6,7 +6,7 @@
  *   - 发音 = Tier 0 浏览器 TTS，原地播，不开 sidepanel
  *   - 其余动作（语境义 / 用法 / 翻句 / 深聊）= 路由进 sidepanel
  *
- * 数据：词类型 popup 一打开就 fetch /api/lookup（命中 cache 通常 < 50ms）。
+ * 数据：词类型 popup 一打开就让 background 本地查词（命中缓存通常很快）。
  *      loading / miss / ok 三态分别渲染：骨架 / 占位 / 完整 dict 卡。
  *
  * 不在本文件做：完整 chat、Markdown 渲染、Tier 1 音频（都在 sidepanel）。
@@ -34,9 +34,7 @@ import type {
 import { actionsForSelectionType } from '@/lib/action-tags';
 import { useDraggable } from '@/lib/use-draggable';
 import { DictCard, DICT_CARD_CSS } from '@/components/dict-card';
-import { authFetch } from '@/lib/auth';
-
-const BACKEND = import.meta.env.WXT_BACKEND_URL ?? 'http://localhost:4010';
+import { PENDING_TAB_KEY } from '@/lib/llm-config';
 
 /** popup 锚定位置 —— pill 点击时计算，传进来定位 popup。
  *  使用 viewport 坐标系（即 getBoundingClientRect 原始值），不加 scrollX/Y，
@@ -359,7 +357,7 @@ type LookupState =
   | { kind: 'idle' }
   | { kind: 'loading' }
   | { kind: 'ok'; data: LookupResult }
-  | { kind: 'signed-out' }
+  | { kind: 'no-key' }
   | { kind: 'miss' };
 
 /**
@@ -377,23 +375,21 @@ function useInlineLookup(ctx: SelectionContext | null): LookupState {
     }
     let cancelled = false;
     setState({ kind: 'loading' });
-    // POST 带 selectionContext，让 server 端同时落 encounter 事件到学习记录。
-    // ECDICT 命中时响应里会带 extras（tag / collins / exchange...）
-    authFetch(`${BACKEND}/api/lookup`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ word: ctx.selection.text, selectionContext: ctx }),
-    })
-      .then((res) => {
-        if (res.status === 401) {
-          if (!cancelled) setState({ kind: 'signed-out' });
-          return null;
-        }
-        return res.ok ? res.json() : Promise.reject(new Error(`http ${res.status}`));
+    // 带 selectionContext，background 同时把语境和 lookup 事件写入 IndexedDB。
+    chrome.runtime.sendMessage({
+      type: 'LOOKUP',
+      payload: { word: ctx.selection.text, selectionContext: ctx },
+    } satisfies BackgroundMessage)
+      .then((res: { ok?: boolean; result?: LookupResult; error?: string } | undefined) => {
+        if (!res?.ok || !res.result) throw new Error(res?.error || 'lookup failed');
+        return res.result;
       })
-      .then((data: LookupResult | null) => {
-        if (!data) return;
+      .then((data: LookupResult) => {
         if (cancelled) return;
+        if (data.needsKey) {
+          setState({ kind: 'no-key' });
+          return;
+        }
         if (!data.partsOfSpeech?.length) {
           setState({ kind: 'miss' });
           return;
@@ -444,14 +440,13 @@ function useInlineTranslate(): {
     const myId = ++reqIdRef.current;
     setState({ kind: 'loading' });
     // 单段批量调用；服务端会查缓存命中直接返回
-    authFetch(`${BACKEND}/api/translate`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ blocks: [{ id: '0', text: trimmed }] }),
-    })
-      .then((res) => {
-        if (res.status === 401) throw new Error('sign_in_required');
-        return res.ok ? res.json() : Promise.reject(new Error(`http ${res.status}`));
+    chrome.runtime.sendMessage({
+      type: 'TRANSLATE_BLOCKS',
+      payload: { blocks: [{ id: '0', text: trimmed }] },
+    } satisfies BackgroundMessage)
+      .then((res: { ok?: boolean; results?: TranslationResult[]; error?: string } | undefined) => {
+        if (!res?.ok || !res.results) throw new Error(res?.error || 'translate failed');
+        return { results: res.results };
       })
       .then((data: { results: TranslationResult[] }) => {
         if (myId !== reqIdRef.current) return;
@@ -461,8 +456,11 @@ function useInlineTranslate(): {
           return;
         }
         if (r.error) {
-          const msg =
-            r.error === 'content_filtered' ? '内容被审查过滤' : '翻译失败';
+          const msg = r.error === 'content_filtered'
+            ? '内容被审查过滤'
+            : r.error === 'no_key'
+              ? '请先在设置里填写 API Key'
+              : '翻译失败';
           setState({ kind: 'error', message: msg });
           return;
         }
@@ -475,7 +473,10 @@ function useInlineTranslate(): {
       .catch((err) => {
         if (myId !== reqIdRef.current) return;
         console.warn('[readsight] inline translate failed', err);
-        setState({ kind: 'error', message: err instanceof Error && err.message === 'sign_in_required' ? '请先登录后使用翻译' : '翻译失败' });
+        const message = err instanceof Error && err.message === 'no_key'
+          ? '请先在设置里填写 API Key'
+          : '翻译失败';
+        setState({ kind: 'error', message });
       });
   }, []);
 
@@ -704,11 +705,20 @@ export function SelectionPopup() {
           </div>
         )}
 
-        {isWord && lookup.kind === 'signed-out' && (
+        {isWord && lookup.kind === 'no-key' && (
           <div className="eag-miss">
-            <span>登录后查询并保存到你的学习记录。</span>
-            <button type="button" className="eag-translate-retry" onClick={() => { sendAsk({ ctx }); closePopup(); }}>
-              打开侧边栏登录
+            <span>词典没有这个词。填写 API Key 后可以用模型估计释义。</span>
+            <button
+              type="button"
+              className="eag-translate-retry"
+              onClick={() => {
+                void chrome.storage.session.set({ [PENDING_TAB_KEY]: 'settings' });
+                chrome.runtime.sendMessage({ type: 'OPEN_SETTINGS' } satisfies BackgroundMessage);
+                sendAsk({ ctx });
+                closePopup();
+              }}
+            >
+              打开设置填写 API Key
             </button>
           </div>
         )}

@@ -18,10 +18,17 @@ import type {
   AskWithSelectionPayload,
   BackgroundMessage,
   SelectionContext,
+  TranslationResult,
 } from '@/lib/messaging';
-import { authFetch } from '@/lib/auth';
+import { lookupWord } from '@/lib/dict/lookup';
+import { translateBatch } from '@/lib/translate';
+import {
+  getKnownLemmasCached,
+  recordPassiveHits,
+  recordEncounter,
+  upsertSelectionContext,
+} from '@/lib/records';
 
-const BACKEND = import.meta.env.WXT_BACKEND_URL ?? 'http://localhost:4010';
 const STORAGE_KEY_LATEST = 'readsight:latest-selection-id';
 const STORAGE_KEY_PREFIX = 'readsight:selection:';
 
@@ -76,6 +83,9 @@ export default defineBackground(() => {
   //   2. "翻译整页 / 撤销整页翻译"：page+selection 都显示，标题随翻译状态切换
   // 在 onInstalled 里 create，避免 SW 重启 / 扩展更新时重复 create 抛"duplicate id"
   chrome.runtime.onInstalled.addListener(() => {
+    navigator.storage?.persist?.().catch(() => {
+      /* 浏览器拒绝持久化时，记录仍在，只是可能被回收 */
+    });
     try {
       chrome.contextMenus.create({
         id: MENU_ID_TRANSLATE_SELECTION,
@@ -134,17 +144,20 @@ export default defineBackground(() => {
       return true; // 标记"我会异步 sendResponse"
     }
     if (message.type === 'PASSIVE_HITS') {
-      // 转发给 /api/encounter；不需要等响应，content script 也不要回执
-      authFetch(`${BACKEND}/api/encounter`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ items: message.payload }),
-      })
-        .then((r) => {
-          if (!r.ok) console.warn('[readsight] /api/encounter HTTP', r.status);
-        })
-        .catch((err) => console.warn('[readsight] /api/encounter failed', err));
+      void recordPassiveHits(message.payload);
       return false;
+    }
+    if (message.type === 'LOOKUP') {
+      handleLookup(message.payload)
+        .then((result) => sendResponse({ ok: true, result }))
+        .catch((err) => sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) }));
+      return true;
+    }
+    if (message.type === 'GET_KNOWN_ITEMS') {
+      getKnownLemmasCached()
+        .then((lemmas) => sendResponse({ ok: true, lemmas }))
+        .catch((err) => sendResponse({ ok: false, error: String(err) }));
+      return true;
     }
     if (message.type === 'HIGHLIGHT_REQUEST') {
       handleHighlightRequest(message.payload)
@@ -176,17 +189,32 @@ export default defineBackground(() => {
   });
 });
 
+async function handleLookup(payload: { word: string; selectionContext?: SelectionContext }) {
+  if (payload.selectionContext) await upsertSelectionContext(payload.selectionContext);
+  const result = await lookupWord(payload.word);
+  if (!result.needsKey && result.partsOfSpeech.length > 0) {
+    await recordEncounter({
+      surfaceForm: payload.word,
+      itemKey: result.itemKey,
+      contextRef: payload.selectionContext?.id ?? null,
+      eventType: 'lookup',
+    });
+  }
+  return result;
+}
+
 async function handleTranslateBlocks(payload: {
   blocks: Array<{ id: string; text: string }>;
-}) {
-  const res = await authFetch(`${BACKEND}/api/translate`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const data = (await res.json()) as { results: unknown };
-  return data.results;
+}): Promise<TranslationResult[]> {
+  if (!Array.isArray(payload.blocks)) throw new Error('missing blocks[]');
+  if (payload.blocks.length > 50) throw new Error('too_many_blocks (max 50)');
+  const batch = await translateBatch(payload.blocks.map((block) => block.text ?? ''));
+  return payload.blocks.map((block, index) => ({
+    id: block.id,
+    zh: batch[index]?.zh ?? '',
+    source: batch[index]?.source ?? 'llm',
+    ...(batch[index]?.error ? { error: batch[index].error } : {}),
+  }));
 }
 
 /**

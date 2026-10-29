@@ -15,6 +15,7 @@ import {
   type ReadsightSettings,
   type SelectionIndicator,
 } from '@/lib/settings';
+import { ModelSettings } from '@/components/model-settings';
 
 function setShowFab(value: boolean) {
   patchSettings({ showFab: value }).catch((err) =>
@@ -28,6 +29,7 @@ export function SettingsPanel() {
 
   return (
     <div className="flex flex-col gap-6 p-4">
+      <ModelSettings />
       <section>
         <div className="mb-3">
           <h2 className="text-[14px] font-semibold text-foreground">外语页面默认行为</h2>

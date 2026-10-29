@@ -13,6 +13,7 @@
  */
 import ReactDOM from 'react-dom/client';
 import { useEffect, useState } from 'react';
+import { Readability } from '@mozilla/readability';
 import type { SelectionContext, SelectionType, BackgroundMessage } from '@/lib/messaging';
 import { resolveLemma } from '@/lib/lemmatize';
 import { Sparkles } from 'lucide-react';
@@ -21,10 +22,7 @@ import { ImmersiveReader } from './immersive-reader';
 import { SelectionPopup, openPopup, useIsPopupOpen } from './popup';
 import { clearDomainRule } from '@/lib/domain-rules';
 import { useSettings } from '@/lib/settings';
-import { authFetch, KNOWN_ITEMS_KEY } from '@/lib/auth';
 
-const BACKEND = import.meta.env.WXT_BACKEND_URL ?? 'http://localhost:4010';
-const KNOWN_ITEMS_TTL_MS = 5 * 60 * 1000;
 const SCAN_MAX_CHARS = 5000;
 
 /** 该 lemma 是否本会话已经被用户主动选过（避免被动重逢误标）。Content script
@@ -135,7 +133,19 @@ export default defineContentScript({
     schedulePassiveScan();
 
     // 接 background 转过来的消息：回原文高亮（PRD §8.3）+ 右键 / 快捷键切翻译 + 划词右键
-    chrome.runtime.onMessage.addListener((message: BackgroundMessage) => {
+    chrome.runtime.onMessage.addListener((message: BackgroundMessage, _sender, sendResponse) => {
+      if (message.type === 'PING') {
+        sendResponse({ ok: true, href: location.href });
+        return false;
+      }
+      if (message.type === 'GET_ARTICLE') {
+        sendResponse({ ok: true, article: readArticle(message.payload?.maxChars ?? 12000) });
+        return false;
+      }
+      if (message.type === 'GET_PARAGRAPH') {
+        sendResponse({ ok: true, paragraph: findParagraph(message.payload?.quote) });
+        return false;
+      }
       if (message.type === 'HIGHLIGHT_ANCHOR') {
         highlightAnchor(message.payload);
       } else if (message.type === 'TOGGLE_TRANSLATE') {
@@ -312,28 +322,53 @@ async function runPassiveScan() {
   }
 }
 
-/** 拉用户已查 lemma 集合，session storage 缓存 5 分钟。 */
+/** 拉用户已查 lemma 集合。缓存由 background 放在 session storage。 */
 async function fetchKnownLemmas(): Promise<Set<string>> {
   try {
-    const cached = await chrome.storage.local.get(KNOWN_ITEMS_KEY);
-    const entry = cached[KNOWN_ITEMS_KEY] as
-      | { lemmas: string[]; expiresAt: number }
+    const res = await chrome.runtime.sendMessage({ type: 'GET_KNOWN_ITEMS' } satisfies BackgroundMessage) as
+      | { ok?: boolean; lemmas?: string[] }
       | undefined;
-    if (entry && entry.expiresAt > Date.now()) {
-      return new Set(entry.lemmas);
-    }
-    const res = await authFetch(`${BACKEND}/api/known-items`);
-    if (!res.ok) return new Set();
-    const data = (await res.json()) as { lemmas: string[] };
-    const lemmas = data.lemmas ?? [];
-    await chrome.storage.local.set({
-      [KNOWN_ITEMS_KEY]: { lemmas, expiresAt: Date.now() + KNOWN_ITEMS_TTL_MS },
-    });
-    return new Set(lemmas);
+    if (!res?.ok) return new Set();
+    return new Set(res.lemmas ?? []);
   } catch (err) {
     console.warn('[readsight] fetchKnownLemmas failed', err);
     return new Set();
   }
+}
+
+function readArticle(maxChars: number): { title: string; url: string; text: string } {
+  const url = location.href;
+  const fallbackTitle = document.title || '';
+  try {
+    const docClone = document.cloneNode(true) as Document;
+    const article = new Readability(docClone).parse();
+    const text = (article?.textContent || document.body?.innerText || '').replace(/[ \t]+\n/g, '\n').trim();
+    return {
+      title: article?.title || fallbackTitle,
+      url,
+      text: text.slice(0, maxChars),
+    };
+  } catch (err) {
+    console.warn('[readsight] readArticle failed', err);
+    return {
+      title: fallbackTitle,
+      url,
+      text: (document.body?.innerText || '').trim().slice(0, maxChars),
+    };
+  }
+}
+
+function findParagraph(quote?: string): string {
+  if (!quote) return '';
+  const blocks = document.querySelectorAll('p, li, blockquote, h1, h2, h3, h4');
+  for (const el of blocks) {
+    const text = (el.textContent ?? '').trim();
+    if (text.includes(quote)) return text.slice(0, 4000);
+  }
+  const body = document.body?.innerText ?? '';
+  const idx = body.indexOf(quote);
+  if (idx < 0) return body.slice(0, 2000);
+  return body.slice(Math.max(0, idx - 240), idx + quote.length + 480);
 }
 
 interface SelectionSnapshot {
